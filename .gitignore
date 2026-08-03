@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.superpowers/
+generated/
+artifacts/
+*.apk
+*.vsix
+.env
+.env.*
+!.env.example
+android/.gradle/
+android/local.properties
+android/**/build/

@@ -1,0 +1,10 @@
+.superpowers/**
+android/**
+artifacts/**
+docs/**
+node_modules/**
+src/**
+tsconfig.json
+**/*.map
+dist/extension.bundle.js
+**/test/**

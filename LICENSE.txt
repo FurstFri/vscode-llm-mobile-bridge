@@ -1,0 +1,4 @@
+Copyright (c) 2026 furstfri. All rights reserved.
+
+This private development build may be used, modified, and distributed only by
+the project owner or with the project owner's explicit permission.

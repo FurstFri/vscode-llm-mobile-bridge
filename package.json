@@ -1,0 +1,90 @@
+{
+  "name": "vscode-llm-mobile-bridge",
+  "displayName": "LLM Mobile Bridge",
+  "description": "A privacy-first mobile view of local Claude Code and Codex sessions.",
+  "version": "0.1.0",
+  "private": true,
+  "publisher": "furstfri",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/FurstFri/vscode-llm-mobile-bridge.git"
+  },
+  "type": "module",
+  "engines": {
+    "vscode": "^1.125.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./dist/extension.bundle.cjs",
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:llmMobileBridge.start",
+    "onCommand:llmMobileBridge.stop",
+    "onCommand:llmMobileBridge.copyPairing",
+    "onCommand:llmMobileBridge.disconnectAll"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "llmMobileBridge.start",
+        "title": "LLM Mobile Bridge: Start Gateway"
+      },
+      {
+        "command": "llmMobileBridge.stop",
+        "title": "LLM Mobile Bridge: Stop Gateway"
+      },
+      {
+        "command": "llmMobileBridge.copyPairing",
+        "title": "LLM Mobile Bridge: Copy Pairing Payload"
+      },
+      {
+        "command": "llmMobileBridge.disconnectAll",
+        "title": "LLM Mobile Bridge: Disconnect All Devices"
+      }
+    ],
+    "configuration": {
+      "title": "LLM Mobile Bridge",
+      "properties": {
+        "llmMobileBridge.autoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Start the loopback gateway automatically in trusted workspaces."
+        },
+        "llmMobileBridge.port": {
+          "type": "number",
+          "default": 8765,
+          "minimum": 1024,
+          "maximum": 65535,
+          "description": "Loopback WebSocket port used by the development gateway."
+        },
+        "llmMobileBridge.mobileUrl": {
+          "type": "string",
+          "default": "ws://10.0.2.2:8765",
+          "description": "URL copied to Android. The default reaches Windows localhost from an emulator."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "bundle:extension": "esbuild src/extension.ts --bundle --platform=node --format=cjs --target=node20 --external:vscode --outfile=dist/extension.bundle.cjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test dist/test/json-rpc-client.test.js dist/test/session-registry.test.js dist/test/gateway-core.test.js dist/test/claude-adapter.test.js dist/test/codex-adapter.test.js dist/test/local-gateway-server.test.js",
+    "probe": "npm run build && node dist/index.js probe",
+    "codex:control-probe": "npm run build && node dist/codex-control-probe.js",
+    "package:vsix": "npm run build && npm run bundle:extension && node -e \"require('fs').mkdirSync('artifacts',{recursive:true})\" && vsce package --no-dependencies --allow-missing-repository --out artifacts/llm-mobile-bridge.vsix"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/vscode": "^1.125.0",
+    "@types/ws": "^8.18.1",
+    "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.28.1",
+    "typescript": "^5.8.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.220",
+    "ws": "^8.21.1"
+  }
+}
