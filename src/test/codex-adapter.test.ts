@@ -24,7 +24,7 @@ const thread = {
   }],
 };
 
-test("lists matching Codex workspace threads as read-only", async () => {
+test("lists matching Codex workspace threads with metadata", async () => {
   const adapter = new CodexReadOnlyAdapter({ cwd: "C:/workspace", source: source() });
 
   const sessions = await adapter.listSessions();
@@ -32,9 +32,47 @@ test("lists matching Codex workspace threads as read-only", async () => {
   assert.deepEqual(sessions, [{
     providerSessionId: "private-codex-thread",
     title: "Codex conversation",
-    capabilities: { canRead: true, canStartTurn: false, canApprove: false },
+    project: "workspace",
+    updatedAt: 42,
+    capabilities: { canRead: true, canStartTurn: true, canApprove: false },
   }]);
   assert.equal(JSON.stringify(sessions).includes("C:\\workspace"), false);
+});
+
+test("lists all threads when no workspace filter is configured", async () => {
+  const adapter = new CodexReadOnlyAdapter({ source: source() });
+
+  const sessions = await adapter.listSessions();
+
+  assert.equal(sessions.length, 1);
+});
+
+test("startTurn maps Codex turn notifications into gateway events", async () => {
+  const turns: Array<{ threadId: string; text: string }> = [];
+  const adapter = new CodexReadOnlyAdapter({
+    source: source({
+      runTurn: async function* (threadId, text) {
+        turns.push({ threadId, text });
+        yield {
+          method: "item/completed",
+          params: { item: { id: "agent-2", type: "agentMessage", text: "Готово" } },
+        };
+        yield { method: "turn/completed", params: { turn: { id: "turn-2", status: "completed" } } };
+      },
+    }),
+  });
+
+  const events = [];
+  for await (const event of adapter.startTurn(thread.id, "продолжай")) events.push(event);
+
+  assert.deepEqual(turns, [{ threadId: thread.id, text: "продолжай" }]);
+  assert.deepEqual(events, [
+    {
+      type: "item.complete",
+      payload: { item: { id: "agent-2", kind: "message", role: "assistant", text: "Готово", status: "completed" } },
+    },
+    { type: "turn.status", payload: { status: "completed" } },
+  ]);
 });
 
 test("normalizes Codex turns without exposing thread metadata", async () => {
@@ -52,12 +90,16 @@ test("normalizes Codex turns without exposing thread metadata", async () => {
   ]);
 });
 
-function source(): CodexSessionSource {
+function source(overrides: Partial<CodexSessionSource> = {}): CodexSessionSource {
   return {
     listThreads: async () => ({ data: [thread] }),
     readThread: async (threadId) => {
       assert.equal(threadId, thread.id);
       return { thread };
     },
+    runTurn: async function* () {
+      throw new Error("runTurn is not expected in this test");
+    },
+    ...overrides,
   };
 }

@@ -69,6 +69,12 @@ export class JsonRpcProcess {
     });
   }
 
+  onNotification(listener: (notification: JsonRpcNotification) => void): () => void {
+    for (const buffered of this.notifications) listener(buffered);
+    this.notificationListeners.add(listener);
+    return () => this.notificationListeners.delete(listener);
+  }
+
   notify(method: string, params?: unknown): void {
     if (!this.closed) this.child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`);
   }

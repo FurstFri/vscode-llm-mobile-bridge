@@ -4,6 +4,8 @@ import type {
   GetSessionInfoOptions,
   GetSessionMessagesOptions,
   ListSessionsOptions,
+  Options,
+  SDKMessage,
   SDKSessionInfo,
   SessionMessage,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -58,7 +60,7 @@ const messages: SessionMessage[] = [
   },
 ];
 
-test("lists Claude sessions as explicitly read-only without exposing workspace paths", async () => {
+test("lists Claude sessions with metadata without exposing workspace paths", async () => {
   const calls: ListSessionsOptions[] = [];
   const adapter = new ClaudeReadOnlyAdapter({
     dir: "C:/private/workspace",
@@ -77,9 +79,77 @@ test("lists Claude sessions as explicitly read-only without exposing workspace p
   assert.deepEqual(sessions, [{
     providerSessionId: sessionInfo.sessionId,
     title: "Chosen title",
-    capabilities: { canRead: true, canStartTurn: false, canApprove: false },
+    project: "workspace",
+    updatedAt: 1234,
+    capabilities: { canRead: true, canStartTurn: true, canApprove: false },
   }]);
   assert.equal(JSON.stringify(sessions).includes(sessionInfo.cwd ?? ""), false);
+});
+
+test("lists sessions across all projects when no directory filter is set", async () => {
+  const calls: ListSessionsOptions[] = [];
+  const adapter = new ClaudeReadOnlyAdapter({
+    source: source({
+      listSessions: async (options) => {
+        calls.push(options ?? {});
+        return [sessionInfo];
+      },
+    }),
+  });
+
+  await adapter.listSessions();
+
+  assert.deepEqual(calls, [{ limit: 100 }]);
+});
+
+test("startTurn resumes the session with query and streams normalized events", async () => {
+  const queries: Array<{ prompt: string; options?: Options }> = [];
+  const adapter = new ClaudeReadOnlyAdapter({
+    source: source({
+      runQuery: (params) => {
+        queries.push(params);
+        return streamOf([
+          {
+            type: "assistant",
+            uuid: "assistant-2",
+            session_id: sessionInfo.sessionId,
+            message: { role: "assistant", content: [{ type: "text", text: "Done." }] },
+          } as unknown as SDKMessage,
+          {
+            type: "result",
+            subtype: "success",
+            is_error: false,
+          } as unknown as SDKMessage,
+        ]);
+      },
+    }),
+  });
+
+  const events = [];
+  for await (const event of adapter.startTurn(sessionInfo.sessionId, "continue please")) events.push(event);
+
+  assert.equal(queries.length, 1);
+  assert.equal(queries[0]?.prompt, "continue please");
+  assert.equal(queries[0]?.options?.resume, sessionInfo.sessionId);
+  assert.equal(queries[0]?.options?.cwd, sessionInfo.cwd);
+  assert.deepEqual(events, [
+    {
+      type: "item.complete",
+      payload: {
+        item: { id: "assistant-2", kind: "message", role: "assistant", text: "Done.", status: "completed" },
+      },
+    },
+    { type: "turn.status", payload: { status: "completed" } },
+  ]);
+});
+
+test("startTurn is rejected when sending is disabled", async () => {
+  const adapter = new ClaudeReadOnlyAdapter({ allowTurns: false, source: source() });
+  const sessions = await adapter.listSessions();
+  assert.equal(sessions[0]?.capabilities?.canStartTurn, false);
+  await assert.rejects(async () => {
+    for await (const _event of adapter.startTurn(sessionInfo.sessionId, "hi")) void _event;
+  });
 });
 
 test("normalizes Claude transcript text, reasoning, and completed tool use", async () => {
@@ -124,6 +194,11 @@ function source(overrides: Partial<ClaudeSessionSource> = {}): ClaudeSessionSour
     listSessions: async (_options?: ListSessionsOptions) => [sessionInfo],
     getSessionInfo: async (_sessionId: string, _options?: GetSessionInfoOptions) => sessionInfo,
     getSessionMessages: async (_sessionId: string, _options?: GetSessionMessagesOptions) => messages,
+    runQuery: () => streamOf([]),
     ...overrides,
   };
+}
+
+async function* streamOf(values: SDKMessage[]): AsyncIterable<SDKMessage> {
+  for (const value of values) yield value;
 }

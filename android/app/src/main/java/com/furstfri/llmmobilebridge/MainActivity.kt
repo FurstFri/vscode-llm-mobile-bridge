@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -130,7 +131,7 @@ private fun SessionsScreen(state: BridgeUiState, model: BridgeViewModel, padding
                 SessionCard(session) { model.select(session) }
             }
             if (state.sessions.isEmpty() && state.connection == ConnectionState.CONNECTED) {
-                item { Text("Для текущего workspace сессии не найдены.") }
+                item { Text("Сессии не найдены. Нажмите «Обновить» или проверьте настройки шлюза.") }
             }
         }
     }
@@ -150,12 +151,38 @@ private fun TimelineScreen(state: BridgeUiState, model: BridgeViewModel, padding
             modifier = Modifier.weight(1f).fillMaxWidth(),
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
+            reverseLayout = false,
         ) {
             items(state.timeline, key = TimelineItem::id) { item -> TimelineCard(item) }
         }
-        if (!session.capabilities.canStartTurn) {
+        if (session.capabilities.canStartTurn) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surface)
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+                    .imePadding(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedTextField(
+                    value = state.composerText,
+                    onValueChange = model::updateComposer,
+                    modifier = Modifier.weight(1f),
+                    placeholder = { Text(if (state.sending) "Ожидание ответа…" else "Сообщение…") },
+                    enabled = !state.sending,
+                    maxLines = 4,
+                )
+                Button(
+                    onClick = model::sendMessage,
+                    enabled = !state.sending && state.composerText.isNotBlank(),
+                ) {
+                    Text("➤")
+                }
+            }
+        } else {
             Text(
-                "Только чтение: resume будет включён после compatibility acceptance check.",
+                "Только чтение: отправка отключена в настройках шлюза.",
                 modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant).padding(16.dp),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -186,7 +213,8 @@ private fun SessionCard(session: BridgeSession, onClick: () -> Unit) {
         Column(Modifier.padding(16.dp)) {
             Text(session.title, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(5.dp))
-            Text("${session.provider} · ${session.state}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            val meta = listOfNotNull(session.provider, session.project, formatWhen(session.updatedAt))
+            Text(meta.joinToString(" · "), color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (!session.capabilities.canStartTurn) {
                 Spacer(Modifier.height(5.dp))
                 Text("READ ONLY", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall)
@@ -225,6 +253,18 @@ private fun TimelineCard(item: TimelineItem) {
 @Composable
 private fun ErrorText(message: String, modifier: Modifier = Modifier) {
     Text(message, modifier = modifier.padding(top = 12.dp), color = MaterialTheme.colorScheme.error)
+}
+
+private fun formatWhen(timestamp: Long?): String? {
+    if (timestamp == null || timestamp <= 0L) return null
+    val elapsed = System.currentTimeMillis() - timestamp
+    val minutes = elapsed / 60_000
+    return when {
+        minutes < 1 -> "только что"
+        minutes < 60 -> "$minutes мин назад"
+        minutes < 60 * 24 -> "${minutes / 60} ч назад"
+        else -> "${minutes / (60 * 24)} дн назад"
+    }
 }
 
 private fun connectionLabel(state: ConnectionState): String = when (state) {

@@ -22,6 +22,8 @@ export interface SessionRegistration {
   providerSessionId: string;
   title?: string;
   capabilities?: SessionCapabilities;
+  project?: string;
+  updatedAt?: number;
 }
 
 export interface SessionBinding {
@@ -55,6 +57,8 @@ export class SessionRegistry {
       provider: registration.provider,
       providerSessionId: registration.providerSessionId,
       title: registration.title,
+      project: registration.project,
+      updatedAt: registration.updatedAt,
       capabilities: registration.capabilities ?? {
         canRead: true,
         canStartTurn: true,
@@ -76,6 +80,8 @@ export class SessionRegistry {
       const existing = this.require(existingRef);
       existing.title = registration.title ?? existing.title;
       existing.capabilities = registration.capabilities ?? existing.capabilities;
+      existing.project = registration.project ?? existing.project;
+      existing.updatedAt = registration.updatedAt ?? existing.updatedAt;
       return this.snapshot(existing);
     }
     return this.register({ ...registration, ref: randomUUID() });
@@ -222,6 +228,8 @@ export class SessionRegistry {
       revision: session.revision,
       capabilities: { ...session.capabilities },
       ...(session.title ? { title: session.title } : {}),
+      ...(session.project ? { project: session.project } : {}),
+      ...(session.updatedAt !== undefined ? { updatedAt: session.updatedAt } : {}),
     };
   }
 }

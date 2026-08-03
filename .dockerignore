@@ -1,0 +1,15 @@
+.git
+.github
+.vscode
+.superpowers
+android
+artifacts
+dist
+docs
+generated
+node_modules
+.env
+.env.*
+*.apk
+*.vsix
+npm-debug.log*

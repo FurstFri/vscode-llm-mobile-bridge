@@ -2,9 +2,12 @@ import {
   getSessionInfo,
   getSessionMessages,
   listSessions,
+  query,
   type GetSessionInfoOptions,
   type GetSessionMessagesOptions,
   type ListSessionsOptions,
+  type Options,
+  type SDKMessage,
   type SDKSessionInfo,
   type SessionMessage,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -20,25 +23,39 @@ export interface ClaudeSessionSource {
   listSessions(options?: ListSessionsOptions): Promise<SDKSessionInfo[]>;
   getSessionInfo(sessionId: string, options?: GetSessionInfoOptions): Promise<SDKSessionInfo | undefined>;
   getSessionMessages(sessionId: string, options?: GetSessionMessagesOptions): Promise<SessionMessage[]>;
+  runQuery(params: { prompt: string; options?: Options }): AsyncIterable<SDKMessage>;
 }
+
+export type ClaudePermissionMode = "default" | "acceptEdits" | "bypassPermissions";
 
 export interface ClaudeReadOnlyAdapterOptions {
   dir?: string;
   limit?: number;
+  allowTurns?: boolean;
+  permissionMode?: ClaudePermissionMode;
   source?: ClaudeSessionSource;
 }
 
-const sdkSource: ClaudeSessionSource = { listSessions, getSessionInfo, getSessionMessages };
+const sdkSource: ClaudeSessionSource = {
+  listSessions,
+  getSessionInfo,
+  getSessionMessages,
+  runQuery: (params) => query(params),
+};
 
 export class ClaudeReadOnlyAdapter implements ProviderAdapter {
   readonly provider = "claude" as const;
   private readonly dir?: string;
   private readonly limit: number;
+  private readonly allowTurns: boolean;
+  private readonly permissionMode: ClaudePermissionMode;
   private readonly source: ClaudeSessionSource;
 
   constructor(options: ClaudeReadOnlyAdapterOptions = {}) {
     this.dir = options.dir;
-    this.limit = options.limit ?? 50;
+    this.limit = options.limit ?? 100;
+    this.allowTurns = options.allowTurns ?? true;
+    this.permissionMode = options.permissionMode ?? "default";
     this.source = options.source ?? sdkSource;
   }
 
@@ -50,9 +67,11 @@ export class ClaudeReadOnlyAdapter implements ProviderAdapter {
     return sessions.map((session) => ({
       providerSessionId: session.sessionId,
       title: session.customTitle ?? session.summary,
+      project: session.cwd ? projectName(session.cwd) : undefined,
+      updatedAt: session.lastModified,
       capabilities: {
         canRead: true,
-        canStartTurn: false,
+        canStartTurn: this.allowTurns,
         canApprove: false,
       },
     }));
@@ -72,8 +91,51 @@ export class ClaudeReadOnlyAdapter implements ProviderAdapter {
     };
   }
 
-  async *startTurn(_providerSessionId: string, _text: string): AsyncIterable<ProviderTurnEvent> {
-    throw new Error("Claude resume is disabled until the existing-session compatibility check passes.");
+  async *startTurn(providerSessionId: string, text: string): AsyncIterable<ProviderTurnEvent> {
+    if (!this.allowTurns) throw new Error("Sending messages to Claude sessions is disabled in settings.");
+    const info = await this.source.getSessionInfo(
+      providerSessionId,
+      this.dir ? { dir: this.dir } : undefined,
+    );
+    const stream = this.source.runQuery({
+      prompt: text,
+      options: {
+        resume: providerSessionId,
+        ...(info?.cwd ? { cwd: info.cwd } : {}),
+        permissionMode: this.permissionMode,
+      },
+    });
+    for await (const message of stream) {
+      yield* mapClaudeStreamMessage(message);
+    }
+  }
+}
+
+function* mapClaudeStreamMessage(message: SDKMessage): Generator<ProviderTurnEvent> {
+  const record = message as unknown as Record<string, unknown>;
+  const type = record.type;
+  if (type === "assistant" || type === "user") {
+    const uuid = typeof record.uuid === "string" ? record.uuid : `stream-${Math.random().toString(36).slice(2)}`;
+    const items = normalizeClaudeMessages([{
+      type,
+      uuid,
+      session_id: typeof record.session_id === "string" ? record.session_id : "",
+      parent_tool_use_id: null,
+      parent_agent_id: null,
+      message: record.message,
+    } as SessionMessage]);
+    for (const item of items) {
+      yield { type: "item.complete", payload: { item } };
+    }
+  } else if (type === "result") {
+    const failed = record.subtype !== "success" || record.is_error === true;
+    yield {
+      type: "turn.status",
+      payload: {
+        status: failed ? "failed" : "completed",
+        ...(typeof record.result === "string" ? { detail: record.result } : {}),
+      },
+    };
   }
 }
 
@@ -174,4 +236,8 @@ function asObject(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
     : undefined;
+}
+
+function projectName(cwd: string): string | undefined {
+  return cwd.split(/[\\/]/).filter(Boolean).at(-1);
 }

@@ -16,6 +16,9 @@ export interface SessionDescriptor {
   revision: SessionRevision;
   capabilities: SessionCapabilities;
   title?: string;
+  /** Project folder name only; full workspace paths never leave the gateway. */
+  project?: string;
+  updatedAt?: number;
 }
 
 export interface TimelineItem {

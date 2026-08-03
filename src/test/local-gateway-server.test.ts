@@ -13,7 +13,7 @@ class TransportFakeAdapter implements ProviderAdapter {
     return [{
       providerSessionId: "private-session-id",
       title: "Mobile test",
-      capabilities: { canRead: true, canStartTurn: false, canApprove: false },
+      capabilities: { canRead: true, canStartTurn: true, canApprove: false },
     }];
   }
 
@@ -25,8 +25,12 @@ class TransportFakeAdapter implements ProviderAdapter {
     };
   }
 
-  async *startTurn(): AsyncIterable<ProviderTurnEvent> {
-    throw new Error("read only");
+  async *startTurn(_providerSessionId: string, text: string): AsyncIterable<ProviderTurnEvent> {
+    yield {
+      type: "item.complete",
+      payload: { item: { id: "reply-1", kind: "message", role: "assistant", text: `echo: ${text}` } },
+    };
+    yield { type: "turn.status", payload: { status: "completed" } };
   }
 }
 
@@ -69,6 +73,28 @@ test("requires authentication and serves list/snapshot over the mobile protocol"
     if (!snapshot.ok || snapshot.type !== "event") return;
     assert.equal(snapshot.event.type, "session.snapshot");
     assert.equal(snapshot.event.correlationId, "snapshot");
+
+    const turnResponses = await exchangeUntil(
+      socket,
+      { protocolVersion: 1, id: "turn", type: "turn.start", sessionRef, text: "hello from phone" },
+      (response) => response.ok && response.type === "turn.end",
+    );
+    const turnEvents = turnResponses
+      .filter((response): response is Extract<MobileResponse, { type: "event" }> =>
+        response.ok === true && response.type === "event")
+      .map((response) => response.event);
+    assert.deepEqual(turnEvents.map((event) => event.type), [
+      "session.state",
+      "turn.start",
+      "item.complete",
+      "turn.status",
+      "session.state",
+    ]);
+    assert.ok(turnEvents.every((event) => event.correlationId === "turn"));
+    const itemEvent = turnEvents.find((event) => event.type === "item.complete");
+    assert.deepEqual(itemEvent?.payload, {
+      item: { id: "reply-1", kind: "message", role: "assistant", text: "echo: hello from phone" },
+    });
   } finally {
     socket.close();
     await onceClosed(socket);
@@ -95,6 +121,36 @@ function exchange(socket: WebSocket, request: MobileRequest): Promise<MobileResp
     });
     socket.send(JSON.stringify(request), (error) => {
       if (error) reject(error);
+    });
+  });
+}
+
+function exchangeUntil(
+  socket: WebSocket,
+  request: MobileRequest,
+  isLast: (response: MobileResponse) => boolean,
+): Promise<MobileResponse[]> {
+  return new Promise((resolve, reject) => {
+    const responses: MobileResponse[] = [];
+    const onMessage = (data: Buffer | ArrayBuffer | Buffer[]) => {
+      try {
+        const response = JSON.parse(data.toString()) as MobileResponse;
+        responses.push(response);
+        if (isLast(response) || response.ok === false) {
+          socket.off("message", onMessage);
+          resolve(responses);
+        }
+      } catch (error) {
+        socket.off("message", onMessage);
+        reject(error);
+      }
+    };
+    socket.on("message", onMessage);
+    socket.send(JSON.stringify(request), (error) => {
+      if (error) {
+        socket.off("message", onMessage);
+        reject(error);
+      }
     });
   });
 }

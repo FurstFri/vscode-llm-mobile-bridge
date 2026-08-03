@@ -60,6 +60,33 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application),
         client.refreshSessions()
     }
 
+    fun updateComposer(value: String) {
+        mutableState.update { it.copy(composerText = value) }
+    }
+
+    fun sendMessage() {
+        val current = state.value
+        val session = current.selectedSession ?: return
+        val text = current.composerText.trim()
+        if (text.isEmpty() || current.sending) return
+        val optimistic = TimelineItem(
+            id = "local-${System.currentTimeMillis()}",
+            kind = "message",
+            role = "user",
+            text = text,
+            status = "pending",
+        )
+        mutableState.update {
+            it.copy(
+                composerText = "",
+                sending = true,
+                timeline = it.timeline + optimistic,
+                error = null,
+            )
+        }
+        client.sendTurn(session.ref, text)
+    }
+
     override fun onConnectionChanged(state: ConnectionState) = onUi {
         mutableState.update { it.copy(connection = state) }
     }
@@ -78,8 +105,31 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application),
         }
     }
 
+    override fun onTurnItem(item: TimelineItem) = onUi {
+        mutableState.update { current ->
+            val existing = current.timeline.indexOfFirst { it.id == item.id }
+            val timeline = if (existing >= 0) {
+                current.timeline.toMutableList().also { it[existing] = item }
+            } else {
+                current.timeline + item
+            }
+            current.copy(timeline = timeline)
+        }
+    }
+
+    override fun onTurnState(state: String) = onUi {
+        mutableState.update { current ->
+            current.copy(selectedSession = current.selectedSession?.copy(state = state))
+        }
+    }
+
+    override fun onTurnEnd() = onUi {
+        mutableState.update { it.copy(sending = false) }
+        state.value.selectedSession?.let { client.requestSnapshot(it.ref) }
+    }
+
     override fun onError(message: String) = onUi {
-        mutableState.update { it.copy(error = message) }
+        mutableState.update { it.copy(error = message, sending = false) }
     }
 
     override fun onCleared() {

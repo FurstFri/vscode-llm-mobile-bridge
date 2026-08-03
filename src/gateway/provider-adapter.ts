@@ -10,6 +10,9 @@ export interface ProviderSessionSummary {
   providerSessionId: string;
   title?: string;
   capabilities?: SessionCapabilities;
+  /** Project folder name only; full workspace paths never leave the gateway. */
+  project?: string;
+  updatedAt?: number;
 }
 
 export interface ProviderSessionSnapshot {

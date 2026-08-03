@@ -57,6 +57,47 @@ object BridgeProtocol {
         return error.optString("message", "Gateway request failed")
     }
 
+    /** Parses a streamed turn item (item.add / item.delta / item.complete). */
+    fun parseTurnItem(response: JSONObject): TimelineItem? {
+        val event = anyEvent(response) ?: return null
+        val type = event.optString("type")
+        if (type != "item.add" && type != "item.delta" && type != "item.complete") return null
+        val item = event.optJSONObject("payload")?.optJSONObject("item") ?: return null
+        return TimelineItem(
+            id = item.optString("id").ifBlank { return null },
+            kind = item.optString("kind", "message"),
+            role = item.optNullableString("role"),
+            text = item.optString("text"),
+            status = item.optNullableString("status"),
+        )
+    }
+
+    /** Returns the new session state for turn lifecycle events, null otherwise. */
+    fun parseTurnState(response: JSONObject): String? {
+        val event = anyEvent(response) ?: return null
+        return when (event.optString("type")) {
+            "session.state" -> event.optJSONObject("payload")?.optString("state")
+            "turn.status" -> event.optJSONObject("payload")?.optString("status")
+            else -> null
+        }?.takeIf(String::isNotBlank)
+    }
+
+    /** Extracts the message from a gateway-level error event. */
+    fun parseEventError(response: JSONObject): String? {
+        val event = anyEvent(response) ?: return null
+        if (event.optString("type") != "error") return null
+        return event.optJSONObject("payload")?.optString("message")?.takeIf(String::isNotBlank)
+            ?: "Gateway reported an error"
+    }
+
+    fun isTurnEnd(response: JSONObject): Boolean =
+        response.optBoolean("ok") && response.optString("type") == "turn.end"
+
+    private fun anyEvent(response: JSONObject): JSONObject? {
+        if (!response.optBoolean("ok") || response.optString("type") != "event") return null
+        return response.optJSONObject("event")
+    }
+
     private fun event(response: JSONObject, expectedType: String): JSONObject? {
         if (!response.optBoolean("ok") || response.optString("type") != "event") return null
         val event = response.optJSONObject("event") ?: return null
@@ -70,6 +111,8 @@ object BridgeProtocol {
             provider = json.getString("provider"),
             title = json.optString("title", "Untitled conversation"),
             state = json.getString("state"),
+            project = json.optNullableString("project"),
+            updatedAt = json.optLong("updatedAt", 0L).takeIf { it > 0L },
             capabilities = SessionCapabilities(
                 canRead = capabilities.optBoolean("canRead"),
                 canStartTurn = capabilities.optBoolean("canStartTurn"),

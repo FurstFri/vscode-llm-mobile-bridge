@@ -1,0 +1,41 @@
+services:
+  gateway:
+    image: ghcr.io/furstfri/vscode-llm-mobile-bridge-gateway:${BRIDGE_IMAGE_TAG:-latest}
+    build:
+      context: .
+      args:
+        CODEX_VERSION: ${CODEX_VERSION:-0.146.0}
+    init: true
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777
+      - /runtime:mode=0700,uid=1000,gid=1000
+    ports:
+      - "127.0.0.1:${BRIDGE_PORT:-8765}:${BRIDGE_PORT:-8765}"
+    environment:
+      BRIDGE_TOKEN: ${BRIDGE_TOKEN:?Set BRIDGE_TOKEN in .env}
+      BRIDGE_HOST: 0.0.0.0
+      BRIDGE_PORT: ${BRIDGE_PORT:-8765}
+      BRIDGE_MOBILE_URL: ${BRIDGE_MOBILE_URL:-ws://10.0.2.2:8765}
+      BRIDGE_ENABLE_CLAUDE: ${BRIDGE_ENABLE_CLAUDE:-true}
+      BRIDGE_ENABLE_CODEX: ${BRIDGE_ENABLE_CODEX:-true}
+      BRIDGE_CLAUDE_PROJECT_DIR: ${BRIDGE_CLAUDE_PROJECT_DIR:-}
+      BRIDGE_CODEX_CWD: ${BRIDGE_CODEX_CWD:-}
+      BRIDGE_ALLOW_TURNS: ${BRIDGE_ALLOW_TURNS:-false}
+      CLAUDE_CONFIG_DIR: /provider-state/claude
+      CODEX_HOME: /runtime/codex
+      CODEX_BIN: /usr/local/bin/codex
+    volumes:
+      - type: bind
+        source: ${CLAUDE_CONFIG_DIR_HOST:?Set CLAUDE_CONFIG_DIR_HOST in .env}
+        target: /provider-state/claude
+        read_only: true
+      - type: bind
+        source: ${CODEX_HOME_HOST:?Set CODEX_HOME_HOST in .env}
+        target: /provider-state/codex
+        read_only: true

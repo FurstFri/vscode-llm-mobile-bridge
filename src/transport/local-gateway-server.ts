@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { WebSocket, WebSocketServer } from "ws";
 import type { GatewayCore } from "../gateway/gateway-core.js";
 import { MOBILE_PROTOCOL_VERSION, type MobileRequest, type MobileResponse } from "./mobile-protocol.js";
@@ -13,6 +13,7 @@ export interface LocalGatewayServerOptions {
 export class LocalGatewayServer {
   private server?: WebSocketServer;
   private readonly authorized = new WeakSet<WebSocket>();
+  private readonly owners = new WeakMap<WebSocket, string>();
   private readonly gateway: GatewayCore;
   private readonly token: string;
   private readonly host: string;
@@ -87,6 +88,16 @@ export class LocalGatewayServer {
       } else if (request.type === "session.list") {
         const event = await this.gateway.listSessions(request.id);
         this.send(socket, { protocolVersion: 1, id: request.id, ok: true, type: "event", event });
+      } else if (request.type === "turn.start") {
+        let owner = this.owners.get(socket);
+        if (!owner) {
+          owner = `mobile-${randomUUID()}`;
+          this.owners.set(socket, owner);
+        }
+        for await (const event of this.gateway.startTurn(request.sessionRef, owner, request.text, request.id)) {
+          this.send(socket, { protocolVersion: 1, id: request.id, ok: true, type: "event", event });
+        }
+        this.send(socket, { protocolVersion: 1, id: request.id, ok: true, type: "turn.end" });
       } else {
         const event = await this.gateway.readSnapshot(request.sessionRef, request.id);
         this.send(socket, { protocolVersion: 1, id: request.id, ok: true, type: "event", event });
@@ -117,6 +128,9 @@ function parseRequest(raw: string): MobileRequest | undefined {
     if (value.type === "auth" && typeof value.token === "string") return value as MobileRequest;
     if (value.type === "ping" || value.type === "session.list") return value as MobileRequest;
     if (value.type === "session.snapshot" && typeof value.sessionRef === "string") return value as MobileRequest;
+    if (value.type === "turn.start" && typeof value.sessionRef === "string" && typeof value.text === "string") {
+      return value as MobileRequest;
+    }
     return undefined;
   } catch {
     return undefined;

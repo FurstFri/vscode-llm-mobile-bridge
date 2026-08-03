@@ -16,6 +16,8 @@ data class BridgeSession(
     val provider: String,
     val title: String,
     val state: String,
+    val project: String? = null,
+    val updatedAt: Long? = null,
     val capabilities: SessionCapabilities,
 )
 
@@ -41,5 +43,7 @@ data class BridgeUiState(
     val sessions: List<BridgeSession> = emptyList(),
     val selectedSession: BridgeSession? = null,
     val timeline: List<TimelineItem> = emptyList(),
+    val composerText: String = "",
+    val sending: Boolean = false,
     val error: String? = null,
 )

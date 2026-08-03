@@ -2,7 +2,7 @@
   "name": "vscode-llm-mobile-bridge",
   "displayName": "LLM Mobile Bridge",
   "description": "A privacy-first mobile view of local Claude Code and Codex sessions.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "publisher": "furstfri",
   "repository": {
@@ -18,11 +18,7 @@
   ],
   "main": "./dist/extension.bundle.cjs",
   "activationEvents": [
-    "onStartupFinished",
-    "onCommand:llmMobileBridge.start",
-    "onCommand:llmMobileBridge.stop",
-    "onCommand:llmMobileBridge.copyPairing",
-    "onCommand:llmMobileBridge.disconnectAll"
+    "onStartupFinished"
   ],
   "contributes": {
     "commands": [
@@ -41,8 +37,50 @@
       {
         "command": "llmMobileBridge.disconnectAll",
         "title": "LLM Mobile Bridge: Disconnect All Devices"
+      },
+      {
+        "command": "llmMobileBridge.refreshSessions",
+        "title": "LLM Mobile Bridge: Refresh Sessions",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "llmMobileBridge.openSession",
+        "title": "LLM Mobile Bridge: Open Session Transcript"
       }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "llmMobileBridge",
+          "title": "LLM Bridge",
+          "icon": "media/bridge.svg"
+        }
+      ]
+    },
+    "views": {
+      "llmMobileBridge": [
+        {
+          "id": "llmMobileBridge.panel",
+          "name": "Mobile Bridge",
+          "icon": "media/bridge.svg"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "llmMobileBridge.refreshSessions",
+          "when": "view == llmMobileBridge.panel",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "llmMobileBridge.openSession",
+          "when": "false"
+        }
+      ]
+    },
     "configuration": {
       "title": "LLM Mobile Bridge",
       "properties": {
@@ -62,6 +100,30 @@
           "type": "string",
           "default": "ws://10.0.2.2:8765",
           "description": "URL copied to Android. The default reaches Windows localhost from an emulator."
+        },
+        "llmMobileBridge.sessionScope": {
+          "type": "string",
+          "enum": ["all", "workspace"],
+          "default": "all",
+          "description": "Show sessions from all projects or only from the current workspace folder."
+        },
+        "llmMobileBridge.sessionLimit": {
+          "type": "number",
+          "default": 100,
+          "minimum": 1,
+          "maximum": 1000,
+          "description": "Maximum number of sessions listed per provider."
+        },
+        "llmMobileBridge.allowSendingMessages": {
+          "type": "boolean",
+          "default": true,
+          "description": "Allow the mobile client to send new messages into existing Claude and Codex sessions."
+        },
+        "llmMobileBridge.claudePermissionMode": {
+          "type": "string",
+          "enum": ["default", "acceptEdits", "bypassPermissions"],
+          "default": "default",
+          "description": "Permission mode for Claude turns started from the phone. 'default' keeps project permission rules; tools without prior approval are denied."
         }
       }
     }
@@ -70,9 +132,13 @@
     "build": "tsc -p tsconfig.json",
     "bundle:extension": "esbuild src/extension.ts --bundle --platform=node --format=cjs --target=node20 --external:vscode --outfile=dist/extension.bundle.cjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test dist/test/json-rpc-client.test.js dist/test/session-registry.test.js dist/test/gateway-core.test.js dist/test/claude-adapter.test.js dist/test/codex-adapter.test.js dist/test/local-gateway-server.test.js",
+    "test": "npm run build && node --test dist/test/json-rpc-client.test.js dist/test/session-registry.test.js dist/test/gateway-core.test.js dist/test/claude-adapter.test.js dist/test/codex-adapter.test.js dist/test/local-gateway-server.test.js dist/test/gateway-daemon-config.test.js dist/test/gateway-daemon.test.js",
     "probe": "npm run build && node dist/index.js probe",
     "codex:control-probe": "npm run build && node dist/codex-control-probe.js",
+    "gateway:serve": "npm run build && node dist/gateway-daemon.js serve",
+    "gateway:pairing": "npm run build && node dist/gateway-daemon.js pairing",
+    "gateway:token": "npm run build && node dist/gateway-daemon.js token",
+    "docker:build": "docker build --build-arg CODEX_VERSION=0.146.0 -t llm-mobile-bridge-gateway:local .",
     "package:vsix": "npm run build && npm run bundle:extension && node -e \"require('fs').mkdirSync('artifacts',{recursive:true})\" && vsce package --no-dependencies --allow-missing-repository --out artifacts/llm-mobile-bridge.vsix"
   },
   "devDependencies": {

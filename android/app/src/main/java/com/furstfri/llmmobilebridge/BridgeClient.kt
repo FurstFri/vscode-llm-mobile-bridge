@@ -14,6 +14,9 @@ class BridgeClient(private val listener: Listener) {
         fun onConnectionChanged(state: ConnectionState)
         fun onSessions(sessions: List<BridgeSession>)
         fun onSnapshot(session: BridgeSession, items: List<TimelineItem>)
+        fun onTurnItem(item: TimelineItem)
+        fun onTurnState(state: String)
+        fun onTurnEnd()
         fun onError(message: String)
     }
 
@@ -66,6 +69,14 @@ class BridgeClient(private val listener: Listener) {
         socket?.send(BridgeProtocol.request(UUID.randomUUID().toString(), "session.list"))
     }
 
+    fun sendTurn(sessionRef: String, text: String) {
+        socket?.send(BridgeProtocol.request(
+            id = UUID.randomUUID().toString(),
+            type = "turn.start",
+            fields = mapOf("sessionRef" to sessionRef, "text" to text),
+        ))
+    }
+
     fun close() {
         socket?.close(1000, "Mobile client disconnecting")
         socket = null
@@ -86,7 +97,11 @@ class BridgeClient(private val listener: Listener) {
                 BridgeProtocol.parseSnapshot(response)?.let { (session, items) ->
                     listener.onSnapshot(session, items)
                 }
+                BridgeProtocol.parseTurnItem(response)?.let(listener::onTurnItem)
+                BridgeProtocol.parseTurnState(response)?.let(listener::onTurnState)
+                BridgeProtocol.parseEventError(response)?.let(listener::onError)
             }
+            "turn.end" -> listener.onTurnEnd()
         }
     }
 }

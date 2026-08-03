@@ -28,6 +28,8 @@ export class GatewayCore {
             providerSessionId: session.providerSessionId,
             title: session.title,
             capabilities: session.capabilities,
+            project: session.project,
+            updatedAt: session.updatedAt,
           });
         }
       } catch {

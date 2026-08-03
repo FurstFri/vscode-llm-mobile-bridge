@@ -8,16 +8,18 @@ import type {
   ProviderTurnEvent,
 } from "../gateway/provider-adapter.js";
 import type { TimelineItem } from "../gateway/protocol.js";
-import { JsonRpcProcess } from "./json-rpc-client.js";
+import { JsonRpcNotification, JsonRpcProcess } from "./json-rpc-client.js";
 
 export interface CodexSessionSource {
   listThreads(): Promise<unknown>;
   readThread(threadId: string): Promise<unknown>;
+  runTurn(threadId: string, text: string): AsyncIterable<JsonRpcNotification>;
 }
 
 export interface CodexReadOnlyAdapterOptions {
   cwd?: string;
   limit?: number;
+  allowTurns?: boolean;
   executable?: string;
   source?: CodexSessionSource;
 }
@@ -26,11 +28,13 @@ export class CodexReadOnlyAdapter implements ProviderAdapter {
   readonly provider = "codex" as const;
   private readonly cwd?: string;
   private readonly limit: number;
+  private readonly allowTurns: boolean;
   private readonly source: CodexSessionSource;
 
   constructor(options: CodexReadOnlyAdapterOptions = {}) {
     this.cwd = options.cwd;
-    this.limit = options.limit ?? 50;
+    this.limit = options.limit ?? 100;
+    this.allowTurns = options.allowTurns ?? true;
     this.source = options.source ?? new AppServerCodexSource(options.executable, this.limit);
   }
 
@@ -46,7 +50,9 @@ export class CodexReadOnlyAdapter implements ProviderAdapter {
         return [{
           providerSessionId: thread.id,
           title: firstString(thread, ["name", "preview"]) ?? "Codex conversation",
-          capabilities: { canRead: true, canStartTurn: false, canApprove: false },
+          project: typeof thread.cwd === "string" && thread.cwd ? projectName(thread.cwd) : undefined,
+          updatedAt: typeof thread.updatedAt === "number" ? thread.updatedAt : undefined,
+          capabilities: { canRead: true, canStartTurn: this.allowTurns, canApprove: false },
         }];
       });
   }
@@ -68,13 +74,33 @@ export class CodexReadOnlyAdapter implements ProviderAdapter {
     };
   }
 
-  async *startTurn(_providerSessionId: string, _text: string): AsyncIterable<ProviderTurnEvent> {
-    throw new Error("Codex existing-session resume remains disabled until the acceptance check passes.");
+  async *startTurn(providerSessionId: string, text: string): AsyncIterable<ProviderTurnEvent> {
+    if (!this.allowTurns) throw new Error("Sending messages to Codex threads is disabled in settings.");
+    for await (const notification of this.source.runTurn(providerSessionId, text)) {
+      yield* mapCodexNotification(notification);
+    }
+  }
+}
+
+function* mapCodexNotification(notification: JsonRpcNotification): Generator<ProviderTurnEvent> {
+  const params = asObject(notification.params);
+  if (notification.method === "turn/completed") {
+    const status = firstString(asObject(params?.turn), ["status"]) ?? "completed";
+    yield {
+      type: "turn.status",
+      payload: { status: status === "completed" ? "completed" : "failed" },
+    };
+    return;
+  }
+  const item = asObject(params?.item);
+  if (!item) return;
+  for (const normalized of normalizeCodexItems([item])) {
+    yield { type: "item.complete", payload: { item: normalized } };
   }
 }
 
 class AppServerCodexSource implements CodexSessionSource {
-  constructor(private readonly configuredExecutable?: string, private readonly limit = 50) {}
+  constructor(private readonly configuredExecutable?: string, private readonly limit = 100) {}
 
   async listThreads(): Promise<unknown> {
     return this.request("thread/list", { limit: this.limit });
@@ -84,7 +110,50 @@ class AppServerCodexSource implements CodexSessionSource {
     return this.request("thread/read", { threadId, includeTurns: true });
   }
 
-  private async request(method: string, params: unknown): Promise<unknown> {
+  async *runTurn(threadId: string, text: string): AsyncIterable<JsonRpcNotification> {
+    const appServer = await this.startAppServer();
+    try {
+      const resumed = await appServer.request("thread/resume", { threadId }, 30_000);
+      if (resumed.error) throw new Error(resumed.error.message ?? "Codex thread/resume failed");
+
+      const queue: JsonRpcNotification[] = [];
+      let wake: (() => void) | undefined;
+      const unsubscribe = appServer.onNotification((notification) => {
+        queue.push(notification);
+        wake?.();
+      });
+      try {
+        const started = await appServer.request("turn/start", {
+          threadId,
+          input: [{ type: "text", text }],
+        }, 60_000);
+        if (started.error) throw new Error(started.error.message ?? "Codex turn/start failed");
+
+        const deadline = Date.now() + 10 * 60_000;
+        let finished = false;
+        while (!finished) {
+          while (queue.length === 0) {
+            if (Date.now() > deadline) throw new Error("Timed out waiting for the Codex turn to complete");
+            await new Promise<void>((resolve) => {
+              wake = resolve;
+              setTimeout(resolve, 1_000);
+            });
+            wake = undefined;
+          }
+          const notification = queue.shift();
+          if (!notification) continue;
+          yield notification;
+          if (notification.method === "turn/completed" || notification.method === "turn/failed") finished = true;
+        }
+      } finally {
+        unsubscribe();
+      }
+    } finally {
+      appServer.close();
+    }
+  }
+
+  private async startAppServer(): Promise<JsonRpcProcess> {
     const appServer = await JsonRpcProcess.start(resolveCodexExecutable(this.configuredExecutable), ["app-server", "--stdio"]);
     try {
       const initialized = await appServer.request("initialize", {
@@ -92,6 +161,16 @@ class AppServerCodexSource implements CodexSessionSource {
       });
       if (initialized.error) throw new Error(initialized.error.message ?? "Codex initialize failed");
       appServer.notify("initialized", {});
+      return appServer;
+    } catch (error) {
+      appServer.close();
+      throw error;
+    }
+  }
+
+  private async request(method: string, params: unknown): Promise<unknown> {
+    const appServer = await this.startAppServer();
+    try {
       const response = await appServer.request(method, params, 30_000);
       if (response.error) throw new Error(response.error.message ?? `${method} failed`);
       return response.result;
@@ -170,6 +249,10 @@ function firstString(value: Record<string, unknown> | undefined, keys: string[])
 
 function humanize(value: string): string {
   return value.replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase();
+}
+
+function projectName(cwd: string): string | undefined {
+  return cwd.split(/[\\/]/).filter(Boolean).at(-1);
 }
 
 function samePath(left: string, right: string): boolean {
