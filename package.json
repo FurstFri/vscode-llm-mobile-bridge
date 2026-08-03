@@ -99,7 +99,7 @@
         "llmMobileBridge.mobileUrl": {
           "type": "string",
           "default": "ws://10.0.2.2:8765",
-          "description": "URL copied to Android. The default reaches Windows localhost from an emulator."
+          "description": "URL copied to Android. The default reaches Windows localhost from an emulator. Local ws:// hosts (10.0.2.2, 127.0.0.1, localhost) get the active gateway port substituted; any other URL — e.g. a wss:// reverse-proxy domain — is copied exactly as configured."
         },
         "llmMobileBridge.sessionScope": {
           "type": "string",

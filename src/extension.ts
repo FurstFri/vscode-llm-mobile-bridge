@@ -77,7 +77,7 @@ class BridgeController implements vscode.Disposable {
     const token = await this.getOrCreateToken();
     const configuredUrl = vscode.workspace.getConfiguration("llmMobileBridge")
       .get<string>("mobileUrl", `ws://10.0.2.2:${this.activePort}`);
-    const url = replacePort(configuredUrl, this.activePort);
+    const url = buildMobileUrl(configuredUrl, this.activePort);
     await vscode.env.clipboard.writeText(JSON.stringify({ protocolVersion: 1, url, token }));
     await vscode.window.showInformationMessage("LLM Mobile Bridge pairing payload copied to the clipboard.");
   }
@@ -333,10 +333,15 @@ function createToken(): string {
   return randomBytes(32).toString("base64url");
 }
 
-function replacePort(url: string, port: number): string {
+function buildMobileUrl(url: string, port: number): string {
   try {
     const parsed = new URL(url);
-    parsed.port = String(port);
+    // Only sync the port for the local development hosts; a custom domain
+    // (e.g. a wss:// reverse proxy) is used exactly as configured.
+    const localHosts = new Set(["10.0.2.2", "127.0.0.1", "localhost"]);
+    if (parsed.protocol === "ws:" && localHosts.has(parsed.hostname)) {
+      parsed.port = String(port);
+    }
     return parsed.toString();
   } catch {
     return `ws://10.0.2.2:${port}`;
