@@ -130,7 +130,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "bundle:extension": "esbuild src/extension.ts --bundle --platform=node --format=cjs --target=node20 --external:vscode --outfile=dist/extension.bundle.cjs",
+    "bundle:extension": "esbuild src/extension.ts --bundle --platform=node --format=cjs --target=node20 --external:vscode \"--banner:js=const __import_meta_url = require('node:url').pathToFileURL(__filename).toString();\" --define:import.meta.url=__import_meta_url --outfile=dist/extension.bundle.cjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test dist/test/json-rpc-client.test.js dist/test/session-registry.test.js dist/test/gateway-core.test.js dist/test/claude-adapter.test.js dist/test/codex-adapter.test.js dist/test/local-gateway-server.test.js dist/test/gateway-daemon-config.test.js dist/test/gateway-daemon.test.js",
     "probe": "npm run build && node dist/index.js probe",
