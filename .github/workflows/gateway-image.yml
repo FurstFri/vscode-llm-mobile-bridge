@@ -10,6 +10,12 @@ permissions:
   contents: read
   packages: write
 
+# Pushing a commit and its tag together triggers two identical builds; racing
+# pushes to the same package trip GHCR's secondary rate limit. Queue them.
+concurrency:
+  group: gateway-image-${{ github.sha }}
+  cancel-in-progress: false
+
 jobs:
   publish:
     runs-on: ubuntu-latest

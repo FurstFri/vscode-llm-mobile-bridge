@@ -15,6 +15,7 @@ class BridgeController implements vscode.Disposable {
   private relayClient?: RelayHostClient;
   private gateway?: GatewayCore;
   private activePort?: number;
+  private takeoverTimer?: NodeJS.Timeout;
   private readonly status: vscode.StatusBarItem;
   readonly output: vscode.LogOutputChannel;
   private readonly changeEmitter = new vscode.EventEmitter<void>();
@@ -68,15 +69,42 @@ class BridgeController implements vscode.Disposable {
     } catch (error) {
       this.activePort = undefined;
       await server.stop();
-      this.setStopped();
       const message = error instanceof Error ? error.message : String(error);
-      this.output.error(`Gateway failed to start: ${message}`);
-      await vscode.window.showErrorMessage(`LLM Mobile Bridge could not start: ${message}`);
+      if (isPortInUse(error)) {
+        // Another VS Code window already hosts the gateway for this machine.
+        // Stay idle and take over if that window closes.
+        this.setStandby(port);
+        this.output.info(`Port ${port} is already served by another VS Code window; standing by.`);
+        this.scheduleTakeover();
+      } else {
+        this.setStopped();
+        this.output.error(`Gateway failed to start: ${message}`);
+        await vscode.window.showErrorMessage(`LLM Mobile Bridge could not start: ${message}`);
+      }
     }
     this.changeEmitter.fire();
   }
 
+  private scheduleTakeover(): void {
+    if (this.takeoverTimer || this.server) return;
+    this.takeoverTimer = setInterval(() => {
+      if (this.server) {
+        this.clearTakeover();
+        return;
+      }
+      void this.start();
+    }, 15_000);
+    this.takeoverTimer.unref?.();
+  }
+
+  private clearTakeover(): void {
+    if (!this.takeoverTimer) return;
+    clearInterval(this.takeoverTimer);
+    this.takeoverTimer = undefined;
+  }
+
   async stop(): Promise<void> {
+    this.clearTakeover();
     const server = this.server;
     this.server = undefined;
     this.activePort = undefined;
@@ -141,7 +169,13 @@ class BridgeController implements vscode.Disposable {
     const allowTurns = config.get<boolean>("allowSendingMessages", true);
     const permissionMode = config.get<ClaudePermissionMode>("claudePermissionMode", "default");
     const executablePath = config.get<string>("claudeExecutable", "").trim() || undefined;
-    const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    // In a Remote-SSH window the workspace lives on another machine; its path
+    // means nothing to the local session stores, so ignore it entirely.
+    const workspace = vscode.workspace.workspaceFolders?.[0]?.uri;
+    const folder = workspace?.scheme === "file" ? workspace.fsPath : undefined;
+    if (workspace && !folder) {
+      this.output.info(`Remote workspace (${workspace.scheme}) ignored; using local sessions and home directory.`);
+    }
     const dir = scope === "workspace" ? folder : undefined;
     // New chats started from the phone run in the open workspace folder.
     const defaultCwd = folder ?? homedir();
@@ -167,6 +201,13 @@ class BridgeController implements vscode.Disposable {
   private setStopped(): void {
     this.status.text = "$(debug-disconnect) LLM Bridge: stopped";
     this.status.tooltip = "Run “LLM Mobile Bridge: Start Gateway” to enable the loopback gateway.";
+  }
+
+  private setStandby(port: number): void {
+    this.status.text = "$(circle-outline) LLM Bridge: another window";
+    this.status.tooltip =
+      `Another VS Code window already serves the gateway on port ${port}. `
+      + "This window will take over automatically if that one closes.";
   }
 }
 
@@ -353,6 +394,10 @@ function formatWhen(timestamp?: number): string | undefined {
   if (days === 1) return "вчера";
   if (days < 7) return `${days} дн. назад`;
   return date.toLocaleDateString();
+}
+
+function isPortInUse(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException | undefined)?.code === "EADDRINUSE";
 }
 
 function createToken(): string {

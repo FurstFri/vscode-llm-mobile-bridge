@@ -2,7 +2,7 @@
   "name": "vscode-llm-mobile-bridge",
   "displayName": "LLM Mobile Bridge",
   "description": "A privacy-first mobile view of local Claude Code and Codex sessions.",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "private": true,
   "publisher": "furstfri",
   "repository": {
@@ -17,6 +17,10 @@
     "Other"
   ],
   "main": "./dist/extension.bundle.cjs",
+  "// extensionKind": "The gateway reads the local ~/.claude and ~/.codex stores and spawns the local CLIs, so it must run on the machine holding the sessions — never on a Remote-SSH host.",
+  "extensionKind": [
+    "ui"
+  ],
   "activationEvents": [
     "onStartupFinished"
   ],
