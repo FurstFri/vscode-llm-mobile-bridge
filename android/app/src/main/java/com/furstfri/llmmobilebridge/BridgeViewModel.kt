@@ -41,6 +41,14 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application),
         state.value.pairing?.let(client::connect)
     }
 
+    /** Reconnects after screen wake or network loss; no-op when already connected. */
+    fun reconnectIfNeeded() {
+        val current = state.value
+        if (current.pairing != null && current.connection == ConnectionState.DISCONNECTED) {
+            client.connect(current.pairing)
+        }
+    }
+
     fun unpair() {
         client.close()
         store.clear()

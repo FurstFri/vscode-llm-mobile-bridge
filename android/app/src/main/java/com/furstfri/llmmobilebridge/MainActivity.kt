@@ -1,7 +1,6 @@
 package com.furstfri.llmmobilebridge
 
 import android.os.Bundle
-import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -24,6 +23,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -34,6 +35,10 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
+import androidx.compose.material3.TabRowDefaults
+import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
@@ -43,6 +48,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -52,8 +58,10 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /** VS Code Dark Modern palette with the Claude/Codex accents. */
 private object Vs {
@@ -88,7 +96,8 @@ private val BridgeColors = darkColorScheme(
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        // FLAG_SECURE intentionally not set: screenshots and screen recording
+        // are allowed by user request.
         enableEdgeToEdge()
         setContent {
             MaterialTheme(colorScheme = BridgeColors) {
@@ -102,6 +111,19 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun BridgeScreen(state: BridgeUiState, model: BridgeViewModel) {
+    // Reconnect immediately when the screen wakes up / the app returns to
+    // the foreground — the socket usually dies while the phone is locked.
+    LifecycleResumeEffect(Unit) {
+        model.reconnectIfNeeded()
+        onPauseOrDispose { }
+    }
+    // Background retry loop: while paired but disconnected, keep trying.
+    LaunchedEffect(state.connection, state.pairing) {
+        if (state.pairing != null && state.connection == ConnectionState.DISCONNECTED) {
+            delay(5_000)
+            model.reconnectIfNeeded()
+        }
+    }
     Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
         when {
             state.pairing == null -> PairingScreen(state, model, padding)
@@ -160,6 +182,11 @@ private fun PairingScreen(state: BridgeUiState, model: BridgeViewModel, padding:
 // Sessions
 // ---------------------------------------------------------------------------
 
+private val ProviderPages = listOf(
+    Triple("CLAUDE CODE", "claude", Vs.Claude),
+    Triple("CODEX", "codex", Vs.Codex),
+)
+
 @Composable
 private fun SessionsScreen(state: BridgeUiState, model: BridgeViewModel, padding: PaddingValues) {
     // Keep the list fresh while the screen is open.
@@ -169,13 +196,43 @@ private fun SessionsScreen(state: BridgeUiState, model: BridgeViewModel, padding
             model.refresh()
         }
     }
+    val pagerState = rememberPagerState(pageCount = { ProviderPages.size })
+    val scope = rememberCoroutineScope()
     Column(Modifier.fillMaxSize().padding(padding)) {
         PanelHeader(
-            title = "Чаты",
+            title = "LLM Bridge",
             subtitle = connectionLabel(state.connection),
             statusColor = connectionColor(state.connection),
             action = "Обновить" to model::refresh,
         )
+        // Top tab strip, VS Code panel style; swipe or tap to switch provider.
+        TabRow(
+            selectedTabIndex = pagerState.currentPage,
+            containerColor = Vs.Panel,
+            contentColor = Vs.Foreground,
+            indicator = { tabPositions ->
+                TabRowDefaults.SecondaryIndicator(
+                    Modifier.tabIndicatorOffset(tabPositions[pagerState.currentPage]),
+                    color = ProviderPages[pagerState.currentPage].third,
+                )
+            },
+            divider = { HorizontalDivider(color = Vs.Border, thickness = 1.dp) },
+        ) {
+            ProviderPages.forEachIndexed { index, (label, _, accent) ->
+                Tab(
+                    selected = pagerState.currentPage == index,
+                    onClick = { scope.launch { pagerState.animateScrollToPage(index) } },
+                    text = {
+                        Text(
+                            label,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (pagerState.currentPage == index) accent else Vs.Faint,
+                        )
+                    },
+                )
+            }
+        }
         state.error?.let { ErrorText(it, Modifier.padding(horizontal = 16.dp)) }
         if (state.connection == ConnectionState.DISCONNECTED) {
             Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -187,19 +244,26 @@ private fun SessionsScreen(state: BridgeUiState, model: BridgeViewModel, padding
                 OutlinedButton(onClick = model::unpair, shape = RoundedCornerShape(4.dp)) { Text("Забыть связь", color = Vs.Dim) }
             }
         }
-        LazyColumn(Modifier.fillMaxSize()) {
-            items(state.sessions, key = BridgeSession::ref) { session ->
-                SessionRow(session) { model.select(session) }
-                HorizontalDivider(color = Vs.Surface, thickness = 1.dp)
-            }
-            if (state.sessions.isEmpty() && state.connection == ConnectionState.CONNECTED) {
-                item {
-                    Text(
-                        "Сессии не найдены. Нажмите «Обновить» или проверьте настройки шлюза.",
-                        modifier = Modifier.padding(16.dp),
-                        color = Vs.Dim,
-                        fontSize = 13.sp,
-                    )
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+        ) { page ->
+            val provider = ProviderPages[page].second
+            val sessions = state.sessions.filter { it.provider == provider }
+            LazyColumn(Modifier.fillMaxSize()) {
+                items(sessions, key = BridgeSession::ref) { session ->
+                    SessionRow(session) { model.select(session) }
+                    HorizontalDivider(color = Vs.Surface, thickness = 1.dp)
+                }
+                if (sessions.isEmpty() && state.connection == ConnectionState.CONNECTED) {
+                    item {
+                        Text(
+                            "Сессий ${ProviderPages[page].first} нет. Нажмите «Обновить» или проверьте настройки шлюза.",
+                            modifier = Modifier.padding(16.dp),
+                            color = Vs.Dim,
+                            fontSize = 13.sp,
+                        )
+                    }
                 }
             }
         }
@@ -437,24 +501,29 @@ private fun ToolEntry(item: TimelineItem, expanded: Boolean, onToggle: () -> Uni
     }
 }
 
-/** VS Code-style chat composer: bordered rounded field + accent send button. */
+/** Composer modeled on the Claude Code panel: accent-bordered box with a
+ *  text area on top and the +, / and send controls on the bottom row. */
 @Composable
 private fun Composer(state: BridgeUiState, model: BridgeViewModel) {
-    Column {
-        HorizontalDivider(color = Vs.Border, thickness = 1.dp)
-        Row(
-            modifier = Modifier
+    val accent = providerColor(state.selectedSession?.provider ?: "claude")
+    val canSend = !state.sending && state.composerText.isNotBlank()
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(Vs.Panel)
+            .padding(horizontal = 10.dp, vertical = 8.dp)
+            .imePadding(),
+    ) {
+        Column(
+            Modifier
                 .fillMaxWidth()
-                .background(Vs.Panel)
-                .padding(horizontal = 10.dp, vertical = 8.dp)
-                .imePadding(),
-            verticalAlignment = Alignment.Bottom,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                .background(Vs.Surface, RoundedCornerShape(10.dp))
+                .border(1.dp, if (state.sending) Vs.Border else accent, RoundedCornerShape(10.dp)),
         ) {
             OutlinedTextField(
                 value = state.composerText,
                 onValueChange = model::updateComposer,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.fillMaxWidth(),
                 placeholder = {
                     Text(
                         if (state.sending) "Агент отвечает…" else "Напишите сообщение агенту…",
@@ -465,21 +534,52 @@ private fun Composer(state: BridgeUiState, model: BridgeViewModel) {
                 enabled = !state.sending,
                 maxLines = 5,
                 textStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
-                colors = vsFieldColors(),
-                shape = RoundedCornerShape(6.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = Color.Transparent,
+                    unfocusedBorderColor = Color.Transparent,
+                    disabledBorderColor = Color.Transparent,
+                    focusedContainerColor = Color.Transparent,
+                    unfocusedContainerColor = Color.Transparent,
+                    disabledContainerColor = Color.Transparent,
+                    cursorColor = accent,
+                    focusedTextColor = Vs.Foreground,
+                    unfocusedTextColor = Vs.Foreground,
+                ),
             )
-            val canSend = !state.sending && state.composerText.isNotBlank()
-            Box(
-                modifier = Modifier
-                    .padding(bottom = 6.dp)
-                    .size(34.dp)
-                    .background(if (canSend) Vs.Claude else Vs.SurfaceRaised, CircleShape)
-                    .clickable(enabled = canSend, onClick = model::sendMessage),
-                contentAlignment = Alignment.Center,
+            Row(
+                Modifier.fillMaxWidth().padding(start = 10.dp, end = 8.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("↑", color = if (canSend) Color(0xFF1E1E1E) else Vs.Faint, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                ComposerChip("+", enabled = false) {}
+                Spacer(Modifier.width(8.dp))
+                ComposerChip("/", enabled = !state.sending) {
+                    if (!state.composerText.startsWith("/")) model.updateComposer("/" + state.composerText)
+                }
+                Spacer(Modifier.weight(1f))
+                Box(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .background(if (canSend) accent else Vs.SurfaceRaised, RoundedCornerShape(8.dp))
+                        .clickable(enabled = canSend, onClick = model::sendMessage),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("↑", color = if (canSend) Color(0xFF1E1E1E) else Vs.Faint, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                }
             }
         }
+    }
+}
+
+@Composable
+private fun ComposerChip(label: String, enabled: Boolean, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .size(26.dp)
+            .border(1.dp, Vs.Border, RoundedCornerShape(6.dp))
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(label, color = if (enabled) Vs.Dim else Vs.Faint, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
     }
 }
 
