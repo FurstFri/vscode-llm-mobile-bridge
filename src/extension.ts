@@ -16,6 +16,7 @@ class BridgeController implements vscode.Disposable {
   private gateway?: GatewayCore;
   private activePort?: number;
   private takeoverTimer?: NodeJS.Timeout;
+  private healthTimer?: NodeJS.Timeout;
   private readonly status: vscode.StatusBarItem;
   readonly output: vscode.LogOutputChannel;
   private readonly changeEmitter = new vscode.EventEmitter<void>();
@@ -85,6 +86,7 @@ class BridgeController implements vscode.Disposable {
     this.changeEmitter.fire();
   }
 
+  /** Retries until this window can host the gateway (or another one does). */
   private scheduleTakeover(): void {
     if (this.takeoverTimer || this.server) return;
     this.takeoverTimer = setInterval(() => {
@@ -95,6 +97,20 @@ class BridgeController implements vscode.Disposable {
       void this.start();
     }, 15_000);
     this.takeoverTimer.unref?.();
+  }
+
+  /**
+   * Keeps the gateway alive without user action: after an extension update or
+   * a crash the phone would otherwise silently lose the machine.
+   */
+  startHealthCheck(): void {
+    const timer = setInterval(() => {
+      if (this.server || this.takeoverTimer) return;
+      const autoStart = vscode.workspace.getConfiguration("llmMobileBridge").get<boolean>("autoStart", true);
+      if (autoStart && vscode.workspace.isTrusted) void this.start();
+    }, 30_000);
+    timer.unref?.();
+    this.healthTimer = timer;
   }
 
   private clearTakeover(): void {
@@ -156,6 +172,7 @@ class BridgeController implements vscode.Disposable {
   }
 
   dispose(): void {
+    if (this.healthTimer) clearInterval(this.healthTimer);
     void this.stop();
     this.status.dispose();
     this.output.dispose();
@@ -331,6 +348,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   tree.refresh();
   const autoStart = vscode.workspace.getConfiguration("llmMobileBridge").get<boolean>("autoStart", true);
   if (autoStart && vscode.workspace.isTrusted) await controller.start();
+  controller.startHealthCheck();
 }
 
 export function deactivate(): void {}

@@ -75,6 +75,7 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application),
                 pairings = pairings,
                 connections = current.connections - hostId,
                 sessions = current.sessions.filterNot { it.hostId == hostId },
+                providerStatus = current.providerStatus - hostId,
                 selectedSession = current.selectedSession?.takeIf { it.hostId != hostId },
                 timeline = if (current.selectedSession?.hostId == hostId) emptyList() else current.timeline,
             )
@@ -189,6 +190,14 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application),
         }
     }
 
+    override fun onProviderStatus(hostId: String, statuses: List<ProviderStatus>) = onUi {
+        mutableState.update { current ->
+            current.copy(
+                providerStatus = current.providerStatus + (hostId to statuses.associateBy { it.provider }),
+            )
+        }
+    }
+
     override fun onSnapshot(hostId: String, session: BridgeSession, items: List<TimelineItem>) = onUi {
         mutableState.update { current ->
             val open = current.selectedSession
@@ -239,6 +248,8 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application),
         mutableState.update { it.copy(sending = false) }
         val session = state.value.selectedSession
         if (session != null && session.hostId == hostId) client.requestSnapshot(hostId, session.ref)
+        // Usage moved during the turn — refresh the numbers we show.
+        client.requestProviderStatus(hostId)
     }
 
     override fun onError(hostId: String, message: String) = onUi {

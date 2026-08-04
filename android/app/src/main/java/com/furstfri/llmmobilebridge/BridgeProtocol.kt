@@ -111,6 +111,46 @@ object BridgeProtocol {
     fun isTurnEnd(response: JSONObject): Boolean =
         response.optBoolean("ok") && response.optString("type") == "turn.end"
 
+    /** Parses the models and usage limits reported by one machine. */
+    fun parseProviderStatus(response: JSONObject): List<ProviderStatus>? {
+        val event = event(response, "provider.status") ?: return null
+        val providers = event.getJSONObject("payload").getJSONArray("providers")
+        return buildList {
+            for (index in 0 until providers.length()) {
+                val entry = providers.getJSONObject(index)
+                val models = entry.optJSONArray("models") ?: JSONArray()
+                val limits = entry.optJSONObject("limits")
+                add(ProviderStatus(
+                    provider = entry.getString("provider"),
+                    models = buildList {
+                        for (m in 0 until models.length()) {
+                            val model = models.getJSONObject(m)
+                            val efforts = model.optJSONArray("efforts") ?: JSONArray()
+                            add(ProviderModel(
+                                id = model.getString("id"),
+                                label = model.optString("label", model.getString("id")),
+                                description = model.optNullableString("description"),
+                                efforts = buildList { for (e in 0 until efforts.length()) add(efforts.getString(e)) },
+                                defaultEffort = model.optNullableString("defaultEffort"),
+                                isDefault = model.optBoolean("isDefault"),
+                            ))
+                        }
+                    },
+                    limits = limits?.let {
+                        ProviderLimits(
+                            usedPercent = if (it.has("usedPercent")) it.optInt("usedPercent") else null,
+                            resetsAt = it.optLong("resetsAt", 0L).takeIf { value -> value > 0L },
+                            windowMinutes = if (it.has("windowMinutes")) it.optInt("windowMinutes") else null,
+                            plan = it.optNullableString("plan"),
+                            status = it.optNullableString("status"),
+                            note = it.optNullableString("note"),
+                        )
+                    },
+                ))
+            }
+        }
+    }
+
     /** Parses the session descriptor announced for a freshly created chat. */
     fun parseSessionCreated(response: JSONObject): BridgeSession? {
         val event = anyEvent(response) ?: return null

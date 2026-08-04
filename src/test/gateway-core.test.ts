@@ -25,9 +25,21 @@ class FakeAdapter implements ProviderAdapter {
     { type: "turn.status", payload: { status: "completed" } },
   ];
   failList = false;
+  failModels = false;
+  failLimits = false;
   receivedTurns: Array<{ providerSessionId: string; text: string; options?: TurnOptions }> = [];
   receivedNewSessions: Array<{ text: string; options?: TurnOptions }> = [];
   newSessionId = "private-new-thread";
+
+  async listModels() {
+    if (this.failModels) throw new Error("private model diagnostic");
+    return [{ id: "gpt-test", label: "GPT Test", efforts: ["low", "high"], isDefault: true }];
+  }
+
+  async readLimits() {
+    if (this.failLimits) throw new Error("private limits diagnostic");
+    return { usedPercent: 44, windowMinutes: 10080, plan: "plus", status: "allowed" as const };
+  }
 
   async listSessions() {
     if (this.failList) throw new Error("private provider diagnostic");
@@ -169,6 +181,34 @@ test("enforces read-only provider capabilities before claiming a writer", async 
     message: "This session is read-only until provider resume compatibility is approved.",
   });
   assert.deepEqual(adapter.receivedTurns, []);
+});
+
+test("reports provider models and limits together", async () => {
+  const adapter = new FakeAdapter();
+  const gateway = new GatewayCore([adapter]);
+
+  const event = await gateway.readProviderStatus("status-1");
+
+  assert.equal(event.type, "provider.status");
+  assert.equal(event.correlationId, "status-1");
+  assert.deepEqual(event.payload.providers, [{
+    provider: "codex",
+    models: [{ id: "gpt-test", label: "GPT Test", efforts: ["low", "high"], isDefault: true }],
+    limits: { usedPercent: 44, windowMinutes: 10080, plan: "plus", status: "allowed" },
+  }]);
+});
+
+test("keeps provider status usable when a provider cannot answer", async () => {
+  const adapter = new FakeAdapter();
+  adapter.failModels = true;
+  adapter.failLimits = true;
+  const gateway = new GatewayCore([adapter]);
+
+  const event = await gateway.readProviderStatus();
+
+  assert.deepEqual(event.payload.providers, [{ provider: "codex", models: [] }]);
+  assert.equal(JSON.stringify(event).includes("private model diagnostic"), false);
+  assert.equal(JSON.stringify(event).includes("private limits diagnostic"), false);
 });
 
 test("creates a new provider session and registers it behind an opaque ref", async () => {

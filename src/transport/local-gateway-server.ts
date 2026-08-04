@@ -88,6 +88,9 @@ export class LocalGatewayServer {
       } else if (request.type === "session.list") {
         const event = await this.gateway.listSessions(request.id);
         this.send(socket, { protocolVersion: 1, id: request.id, ok: true, type: "event", event });
+      } else if (request.type === "provider.status") {
+        const event = await this.gateway.readProviderStatus(request.id);
+        this.send(socket, { protocolVersion: 1, id: request.id, ok: true, type: "event", event });
       } else if (request.type === "turn.start") {
         const owner = this.ownerFor(socket);
         const options = { model: request.model, effort: request.effort };
@@ -139,7 +142,9 @@ function parseRequest(raw: string): MobileRequest | undefined {
     const value = JSON.parse(raw) as Record<string, unknown>;
     if (value.protocolVersion !== MOBILE_PROTOCOL_VERSION || typeof value.id !== "string") return undefined;
     if (value.type === "auth" && typeof value.token === "string") return value as MobileRequest;
-    if (value.type === "ping" || value.type === "session.list") return value as MobileRequest;
+    if (value.type === "ping" || value.type === "session.list" || value.type === "provider.status") {
+      return value as MobileRequest;
+    }
     if (value.type === "session.snapshot" && typeof value.sessionRef === "string") return value as MobileRequest;
     if (value.type === "turn.start" && typeof value.sessionRef === "string" && typeof value.text === "string") {
       return value as MobileRequest;

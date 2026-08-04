@@ -8,7 +8,7 @@ import type {
   ProviderTurnEvent,
   TurnOptions,
 } from "../gateway/provider-adapter.js";
-import type { TimelineItem } from "../gateway/protocol.js";
+import type { ProviderLimits, ProviderModel, TimelineItem } from "../gateway/protocol.js";
 import { JsonRpcNotification, JsonRpcProcess } from "./json-rpc-client.js";
 
 export type CodexTurnSignal =
@@ -16,6 +16,8 @@ export type CodexTurnSignal =
   | { kind: "notification"; notification: JsonRpcNotification };
 
 export interface CodexSessionSource {
+  listModels(): Promise<unknown>;
+  readRateLimits(): Promise<unknown>;
   listThreads(): Promise<unknown>;
   readThread(threadId: string): Promise<unknown>;
   runTurn(threadId: string, text: string, options?: TurnOptions): AsyncIterable<JsonRpcNotification>;
@@ -39,6 +41,8 @@ export class CodexReadOnlyAdapter implements ProviderAdapter {
   private readonly allowTurns: boolean;
   private readonly defaultCwd?: string;
   private readonly source: CodexSessionSource;
+  /** Fetching models spawns an app-server, so keep the answer. */
+  private models?: ProviderModel[];
 
   constructor(options: CodexReadOnlyAdapterOptions = {}) {
     this.cwd = options.cwd;
@@ -46,6 +50,53 @@ export class CodexReadOnlyAdapter implements ProviderAdapter {
     this.allowTurns = options.allowTurns ?? true;
     this.defaultCwd = options.defaultCwd;
     this.source = options.source ?? new AppServerCodexSource(options.executable, this.limit);
+  }
+
+  async listModels(): Promise<readonly ProviderModel[]> {
+    if (this.models) return this.models;
+    const result = asObject(await this.source.listModels());
+    const data = Array.isArray(result?.data) ? result.data : [];
+    this.models = data
+      .map(asObject)
+      .filter((model): model is Record<string, unknown> => Boolean(model) && model?.hidden !== true)
+      .flatMap((model) => {
+        const id = firstString(model, ["model", "id"]);
+        if (!id) return [];
+        const efforts = Array.isArray(model.supportedReasoningEfforts)
+          ? model.supportedReasoningEfforts
+              .map(asObject)
+              .map((effort) => (typeof effort?.reasoningEffort === "string" ? effort.reasoningEffort : undefined))
+              .filter((effort): effort is string => Boolean(effort))
+          : [];
+        const description = firstString(model, ["description"]);
+        const defaultEffort = firstString(model, ["defaultReasoningEffort"]);
+        return [{
+          id,
+          label: firstString(model, ["displayName"]) ?? id,
+          ...(description ? { description } : {}),
+          efforts,
+          ...(defaultEffort ? { defaultEffort } : {}),
+          isDefault: model.isDefault === true,
+        }];
+      });
+    return this.models;
+  }
+
+  async readLimits(): Promise<ProviderLimits | undefined> {
+    const result = asObject(await this.source.readRateLimits());
+    const limits = asObject(result?.rateLimits);
+    const primary = asObject(limits?.primary);
+    if (!primary && !limits) return undefined;
+    const plan = firstString(limits, ["planType"]);
+    return {
+      ...(typeof primary?.usedPercent === "number" ? { usedPercent: Math.round(primary.usedPercent) } : {}),
+      ...(typeof primary?.resetsAt === "number" ? { resetsAt: primary.resetsAt } : {}),
+      ...(typeof primary?.windowDurationMins === "number" ? { windowMinutes: primary.windowDurationMins } : {}),
+      ...(plan ? { plan } : {}),
+      status: limits?.spendControlReached === true || limits?.rateLimitReachedType
+        ? "rejected"
+        : "allowed",
+    };
   }
 
   async listSessions(): Promise<readonly ProviderSessionSummary[]> {
@@ -131,6 +182,14 @@ function* mapCodexNotification(notification: JsonRpcNotification): Generator<Pro
 
 class AppServerCodexSource implements CodexSessionSource {
   constructor(private readonly configuredExecutable?: string, private readonly limit = 100) {}
+
+  async listModels(): Promise<unknown> {
+    return this.request("model/list", {});
+  }
+
+  async readRateLimits(): Promise<unknown> {
+    return this.request("account/rateLimits/read", {});
+  }
 
   async listThreads(): Promise<unknown> {
     return this.request("thread/list", { limit: this.limit });

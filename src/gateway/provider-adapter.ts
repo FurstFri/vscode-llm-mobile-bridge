@@ -1,6 +1,8 @@
 import type { Provider } from "../model.js";
 import type {
   GatewayEventType,
+  ProviderLimits,
+  ProviderModel,
   SessionCapabilities,
   SessionRevision,
   TimelineItem,
@@ -53,6 +55,10 @@ export interface NewSessionAnnouncement {
 
 export interface ProviderAdapter {
   readonly provider: Provider;
+  /** Models the provider currently offers, for the phone's picker. */
+  listModels(): Promise<readonly ProviderModel[]>;
+  /** Subscription usage, when the provider exposes it. */
+  readLimits(): Promise<ProviderLimits | undefined>;
   listSessions(): Promise<readonly ProviderSessionSummary[]>;
   readSnapshot(providerSessionId: string): Promise<ProviderSessionSnapshot>;
   startTurn(providerSessionId: string, text: string, options?: TurnOptions): AsyncIterable<ProviderTurnEvent>;

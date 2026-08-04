@@ -300,6 +300,17 @@ private fun SessionsScreen(state: BridgeUiState, model: BridgeViewModel, padding
                 .sortedByDescending { it.updatedAt ?: 0L }
             val showHostNames = state.pairings.size > 1
             LazyColumn(Modifier.fillMaxSize()) {
+                // Usage per machine for this provider, straight from the provider.
+                items(state.pairings, key = { "limits/${it.id}" }) { pairing ->
+                    limitsLabel(state.limitsFor(pairing.id, provider))?.let { usage ->
+                        LimitsRow(
+                            accent = accent,
+                            hostName = if (showHostNames) pairing.name else null,
+                            usage = usage,
+                            usedPercent = state.limitsFor(pairing.id, provider)?.usedPercent,
+                        )
+                    }
+                }
                 // One "new chat" entry per machine, so the target is unambiguous.
                 items(state.pairings, key = { "new/${it.id}" }) { pairing ->
                     NewChatRow(
@@ -325,6 +336,45 @@ private fun SessionsScreen(state: BridgeUiState, model: BridgeViewModel, padding
                 }
             }
         }
+    }
+}
+
+/** Subscription usage: a thin bar plus the provider's own numbers. */
+@Composable
+private fun LimitsRow(accent: Color, hostName: String?, usage: String, usedPercent: Int?) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                listOfNotNull(hostName, "лимит").joinToString(" · "),
+                color = Vs.Faint,
+                fontSize = 11.sp,
+                modifier = Modifier.weight(1f),
+            )
+            Text(usage, color = Vs.Dim, fontSize = 11.sp, maxLines = 1)
+        }
+        if (usedPercent != null) {
+            Spacer(Modifier.height(5.dp))
+            val fraction = (usedPercent.coerceIn(0, 100)) / 100f
+            val barColor = when {
+                usedPercent >= 90 -> Vs.Err
+                usedPercent >= 70 -> Vs.Warn
+                else -> accent
+            }
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(3.dp)
+                    .background(Vs.SurfaceRaised, RoundedCornerShape(2.dp)),
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxWidth(fraction)
+                        .height(3.dp)
+                        .background(barColor, RoundedCornerShape(2.dp)),
+                )
+            }
+        }
+        Spacer(Modifier.height(2.dp))
     }
 }
 
@@ -443,6 +493,8 @@ private fun TimelineScreen(state: BridgeUiState, model: BridgeViewModel, padding
                 session?.project,
                 session?.state ?: if (state.sending) "создаётся…" else "не начат",
                 lastActivity?.let { "обновлено ${formatWhen(it)}" },
+                limitsLabel(state.limitsFor(session?.hostId ?: state.newChatHostId, provider))
+                    ?.let { "лимит $it" },
             ).joinToString(" · "),
             statusColor = providerColor(provider),
             action = "‹ Назад" to model::closeTimeline,
@@ -606,36 +658,52 @@ private fun ToolEntry(item: TimelineItem, expanded: Boolean, onToggle: () -> Uni
     }
 }
 
-/** Model choices per provider; the empty value means "provider default". */
-private val ClaudeModels = listOf(
-    "" to "модель по умолчанию",
-    "opus" to "Opus",
-    "sonnet" to "Sonnet",
-    "haiku" to "Haiku",
-)
+/** Options come from the provider itself; the empty value means its default. */
+private fun modelOptions(models: List<ProviderModel>): List<Pair<String, String>> =
+    listOf("" to "модель по умолчанию") + models.map { it.id to it.label }
 
-private val CodexModels = listOf(
-    "" to "модель по умолчанию",
-    "gpt-5.1-codex-max" to "GPT-5.1 Codex Max",
-    "gpt-5.1-codex" to "GPT-5.1 Codex",
-    "gpt-5.1" to "GPT-5.1",
-)
-
-/** Thinking / effort levels; "off" disables extended thinking. */
-private val EffortLevels = listOf(
-    "" to "размышление: авто",
-    "off" to "размышление: выкл",
-    "low" to "размышление: low",
-    "medium" to "размышление: medium",
-    "high" to "размышление: high",
-    "xhigh" to "размышление: xhigh",
-    "max" to "размышление: max",
-)
-
-private fun modelsFor(provider: String) = if (provider == "codex") CodexModels else ClaudeModels
+/**
+ * Effort levels the chosen model accepts. Claude also allows switching
+ * extended thinking off entirely, which the SDK models as a separate flag.
+ */
+private fun effortOptions(models: List<ProviderModel>, modelId: String, provider: String): List<Pair<String, String>> {
+    val selected = models.firstOrNull { it.id == modelId }
+        ?: models.firstOrNull { it.isDefault }
+        ?: models.firstOrNull()
+    val levels = selected?.efforts.orEmpty()
+    return buildList {
+        add("" to "размышление: авто")
+        if (provider == "claude") add("off" to "размышление: выкл")
+        levels.forEach { add(it to "размышление: $it") }
+    }
+}
 
 private fun shortLabel(options: List<Pair<String, String>>, value: String, fallback: String): String =
     options.firstOrNull { it.first == value }?.second?.substringAfter(": ")?.takeIf { value.isNotEmpty() } ?: fallback
+
+/** "44% · сброс через 2 дн" — compact usage line for the header. */
+private fun limitsLabel(limits: ProviderLimits?): String? {
+    if (limits == null) return null
+    limits.note?.let { return it }
+    val used = limits.usedPercent ?: return null
+    val parts = mutableListOf("$used%")
+    limits.windowMinutes?.let { minutes ->
+        parts += when {
+            minutes >= 24 * 60 -> "за ${minutes / (24 * 60)} дн"
+            minutes >= 60 -> "за ${minutes / 60} ч"
+            else -> "за $minutes мин"
+        }
+    }
+    limits.resetsAt?.let { resets ->
+        val left = resets * 1000L - System.currentTimeMillis()
+        if (left > 0) {
+            val hours = left / 3_600_000
+            parts += if (hours >= 24) "сброс через ${hours / 24} дн" else "сброс через ${hours} ч"
+        }
+    }
+    limits.plan?.let { parts += it }
+    return parts.joinToString(" · ")
+}
 
 /** Composer modeled on the Claude Code panel: accent-bordered box with a
  *  text area on top and the model / thinking / send controls below. */
@@ -689,7 +757,10 @@ private fun Composer(state: BridgeUiState, model: BridgeViewModel) {
                 Modifier.fillMaxWidth().padding(start = 10.dp, end = 8.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                val models = modelsFor(provider)
+                val hostId = state.selectedSession?.hostId ?: state.newChatHostId
+                val available = state.modelsFor(hostId, provider)
+                val models = modelOptions(available)
+                val efforts = effortOptions(available, state.turnModel, provider)
                 Box {
                     ComposerChip(
                         label = shortLabel(models, state.turnModel, "модель"),
@@ -702,15 +773,22 @@ private fun Composer(state: BridgeUiState, model: BridgeViewModel) {
                         containerColor = Vs.SurfaceRaised,
                     ) {
                         models.forEach { (value, label) ->
+                            val description = available.firstOrNull { it.id == value }?.description
                             DropdownMenuItem(
                                 text = {
-                                    Text(
-                                        label,
-                                        fontSize = 13.sp,
-                                        color = if (state.turnModel == value) accent else Vs.Foreground,
-                                    )
+                                    Column {
+                                        Text(
+                                            label,
+                                            fontSize = 13.sp,
+                                            color = if (state.turnModel == value) accent else Vs.Foreground,
+                                        )
+                                        description?.let {
+                                            Text(it, fontSize = 11.sp, color = Vs.Faint, maxLines = 2)
+                                        }
+                                    }
                                 },
-                                onClick = { model.setTurnModel(value); modelMenu = false },
+                                // Effort levels differ per model, so reset the pick.
+                                onClick = { model.setTurnModel(value); model.setTurnEffort(""); modelMenu = false },
                             )
                         }
                     }
@@ -718,8 +796,8 @@ private fun Composer(state: BridgeUiState, model: BridgeViewModel) {
                 Spacer(Modifier.width(8.dp))
                 Box {
                     ComposerChip(
-                        label = shortLabel(EffortLevels, state.turnEffort, "размышление"),
-                        enabled = !state.sending,
+                        label = shortLabel(efforts, state.turnEffort, "размышление"),
+                        enabled = !state.sending && efforts.size > 1,
                         accent = if (state.turnEffort.isNotEmpty()) accent else null,
                     ) { effortMenu = true }
                     DropdownMenu(
@@ -727,7 +805,7 @@ private fun Composer(state: BridgeUiState, model: BridgeViewModel) {
                         onDismissRequest = { effortMenu = false },
                         containerColor = Vs.SurfaceRaised,
                     ) {
-                        EffortLevels.forEach { (value, label) ->
+                        efforts.forEach { (value, label) ->
                             DropdownMenuItem(
                                 text = {
                                     Text(

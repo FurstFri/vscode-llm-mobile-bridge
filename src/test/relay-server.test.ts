@@ -12,6 +12,14 @@ const TOKEN = "0123456789abcdef0123456789abcdef";
 class RelayFakeAdapter implements ProviderAdapter {
   readonly provider = "claude" as const;
 
+  async listModels() {
+    return [{ id: "sonnet", label: "Sonnet", efforts: ["low"] }];
+  }
+
+  async readLimits() {
+    return undefined;
+  }
+
   async listSessions() {
     return [{
       providerSessionId: "provider-private-id",

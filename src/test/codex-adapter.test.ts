@@ -90,6 +90,35 @@ test("normalizes Codex turns without exposing thread metadata", async () => {
   ]);
 });
 
+test("maps the Codex model list and hides internal entries", async () => {
+  const adapter = new CodexReadOnlyAdapter({ source: source() });
+
+  const models = await adapter.listModels();
+
+  assert.deepEqual(models, [{
+    id: "gpt-5.6-sol",
+    label: "GPT-5.6-Sol",
+    description: "Latest frontier agentic coding model.",
+    efforts: ["low", "high"],
+    defaultEffort: "low",
+    isDefault: true,
+  }]);
+});
+
+test("maps Codex rate limits", async () => {
+  const adapter = new CodexReadOnlyAdapter({ source: source() });
+
+  const limits = await adapter.readLimits();
+
+  assert.deepEqual(limits, {
+    usedPercent: 44,
+    resetsAt: 1786275247,
+    windowMinutes: 10080,
+    plan: "plus",
+    status: "allowed",
+  });
+});
+
 test("startNewSession announces the created thread before its turn events", async () => {
   const calls: Array<{ text: string; cwd?: string; model?: string }> = [];
   const adapter = new CodexReadOnlyAdapter({
@@ -130,6 +159,31 @@ function source(overrides: Partial<CodexSessionSource> = {}): CodexSessionSource
     runNewThread: async function* () {
       throw new Error("runNewThread is not expected in this test");
     },
+    listModels: async () => ({
+      data: [
+        {
+          id: "gpt-5.6-sol",
+          model: "gpt-5.6-sol",
+          displayName: "GPT-5.6-Sol",
+          description: "Latest frontier agentic coding model.",
+          hidden: false,
+          isDefault: true,
+          defaultReasoningEffort: "low",
+          supportedReasoningEfforts: [
+            { reasoningEffort: "low" },
+            { reasoningEffort: "high" },
+          ],
+        },
+        { id: "legacy", model: "legacy", displayName: "Legacy", hidden: true },
+      ],
+    }),
+    readRateLimits: async () => ({
+      rateLimits: {
+        planType: "plus",
+        primary: { usedPercent: 44, windowDurationMins: 10080, resetsAt: 1786275247 },
+        spendControlReached: false,
+      },
+    }),
     ...overrides,
   };
 }

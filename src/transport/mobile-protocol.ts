@@ -6,6 +6,7 @@ export type MobileRequest =
   | { protocolVersion: 1; id: string; type: "auth"; token: string }
   | { protocolVersion: 1; id: string; type: "ping" }
   | { protocolVersion: 1; id: string; type: "session.list" }
+  | { protocolVersion: 1; id: string; type: "provider.status" }
   | { protocolVersion: 1; id: string; type: "session.snapshot"; sessionRef: string }
   | {
       protocolVersion: 1;

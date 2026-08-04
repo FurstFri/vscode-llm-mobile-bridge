@@ -32,6 +32,32 @@ data class BridgeSession(
     val key: String get() = "$hostId/$ref"
 }
 
+/** A model offered by a provider on one machine. */
+data class ProviderModel(
+    val id: String,
+    val label: String,
+    val description: String? = null,
+    val efforts: List<String> = emptyList(),
+    val defaultEffort: String? = null,
+    val isDefault: Boolean = false,
+)
+
+/** Subscription usage as reported by the provider. */
+data class ProviderLimits(
+    val usedPercent: Int? = null,
+    val resetsAt: Long? = null,
+    val windowMinutes: Int? = null,
+    val plan: String? = null,
+    val status: String? = null,
+    val note: String? = null,
+)
+
+data class ProviderStatus(
+    val provider: String,
+    val models: List<ProviderModel> = emptyList(),
+    val limits: ProviderLimits? = null,
+)
+
 data class TimelineItem(
     val id: String,
     val kind: String,
@@ -57,6 +83,8 @@ data class BridgeUiState(
     /** True while the pairing screen is shown to add another machine. */
     val addingHost: Boolean = false,
     val sessions: List<BridgeSession> = emptyList(),
+    /** Models and limits per machine: hostId -> provider -> status. */
+    val providerStatus: Map<String, Map<String, ProviderStatus>> = emptyMap(),
     val selectedSession: BridgeSession? = null,
     /** Machine a not-yet-created chat belongs to, with its provider. */
     val newChatHostId: String? = null,
@@ -79,4 +107,10 @@ data class BridgeUiState(
         }
 
     val connectedCount: Int get() = connections.values.count { it == ConnectionState.CONNECTED }
+
+    fun modelsFor(hostId: String?, provider: String): List<ProviderModel> =
+        providerStatus[hostId]?.get(provider)?.models.orEmpty()
+
+    fun limitsFor(hostId: String?, provider: String): ProviderLimits? =
+        providerStatus[hostId]?.get(provider)?.limits
 }

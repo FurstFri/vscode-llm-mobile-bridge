@@ -36,8 +36,41 @@ export interface SessionSnapshot {
   items: TimelineItem[];
 }
 
+/** A model the provider currently offers, as reported by the provider itself. */
+export interface ProviderModel {
+  /** Value passed back as the turn's `model` override. */
+  id: string;
+  label: string;
+  description?: string;
+  /** Effort levels this model accepts, in provider order. */
+  efforts: string[];
+  defaultEffort?: string;
+  isDefault?: boolean;
+}
+
+/** Subscription usage for a provider, as far as it reports one. */
+export interface ProviderLimits {
+  /** Share of the current window already used, 0..100. */
+  usedPercent?: number;
+  /** Unix seconds when the window resets. */
+  resetsAt?: number;
+  /** Length of the usage window in minutes (e.g. 10080 for a week). */
+  windowMinutes?: number;
+  plan?: string;
+  status?: "allowed" | "warning" | "rejected";
+  /** Why the number is missing or stale, when it is. */
+  note?: string;
+}
+
+export interface ProviderStatus {
+  provider: Provider;
+  models: ProviderModel[];
+  limits?: ProviderLimits;
+}
+
 export type GatewayEventType =
   | "session.list"
+  | "provider.status"
   | "session.snapshot"
   | "session.state"
   | "session.conflict"

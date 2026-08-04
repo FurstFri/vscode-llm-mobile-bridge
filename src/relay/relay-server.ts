@@ -231,7 +231,9 @@ function requestId(value: Record<string, unknown>): string {
 
 function asForwardableMobileRequest(value: Record<string, unknown>): Exclude<MobileRequest, { type: "auth" }> | undefined {
   if (value.protocolVersion !== MOBILE_PROTOCOL_VERSION || typeof value.id !== "string") return undefined;
-  if (value.type === "ping" || value.type === "session.list") return value as Exclude<MobileRequest, { type: "auth" }>;
+  if (value.type === "ping" || value.type === "session.list" || value.type === "provider.status") {
+    return value as Exclude<MobileRequest, { type: "auth" }>;
+  }
   if (value.type === "session.snapshot" && typeof value.sessionRef === "string") {
     return value as Exclude<MobileRequest, { type: "auth" }>;
   }

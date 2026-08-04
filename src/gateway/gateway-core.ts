@@ -1,6 +1,12 @@
 import { randomUUID } from "node:crypto";
 import type { Provider } from "../model.js";
-import type { GatewayEvent, GatewayEventType, SessionDescriptor, SessionSnapshot } from "./protocol.js";
+import type {
+  GatewayEvent,
+  GatewayEventType,
+  ProviderStatus,
+  SessionDescriptor,
+  SessionSnapshot,
+} from "./protocol.js";
 import type { NewSessionAnnouncement, ProviderAdapter, TurnOptions } from "./provider-adapter.js";
 import { SessionRegistry } from "./session-registry.js";
 import type { WriterLease } from "./protocol.js";
@@ -51,6 +57,28 @@ export class GatewayCore {
       type: "session.list",
       payload: { sessions: this.registry.list() },
     };
+  }
+
+  /** Models and subscription usage, straight from each provider. */
+  async readProviderStatus(correlationId: string = randomUUID()): Promise<GatewayEvent<{ providers: ProviderStatus[] }>> {
+    const providers = await Promise.all([...this.adapters.values()].map(async (adapter) => {
+      const [models, limits] = await Promise.all([
+        adapter.listModels().catch((error: unknown) => {
+          this.log?.(`Model list unavailable (${adapter.provider}): ${describe(error)}`);
+          return [] as const;
+        }),
+        adapter.readLimits().catch((error: unknown) => {
+          this.log?.(`Limits unavailable (${adapter.provider}): ${describe(error)}`);
+          return undefined;
+        }),
+      ]);
+      return {
+        provider: adapter.provider,
+        models: [...models],
+        ...(limits ? { limits } : {}),
+      };
+    }));
+    return this.gatewayEvent("provider.status", { providers }, correlationId) as GatewayEvent<{ providers: ProviderStatus[] }>;
   }
 
   async readSnapshot(ref: string, correlationId: string = randomUUID()): Promise<GatewayEvent<SessionSnapshot>> {
@@ -205,4 +233,8 @@ export class GatewayCore {
     if (!adapter) throw new Error(`Provider adapter is not configured: ${provider}`);
     return adapter;
   }
+}
+
+function describe(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

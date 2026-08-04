@@ -17,6 +17,7 @@ class BridgeClient(private val listener: Listener) {
     interface Listener {
         fun onConnectionChanged(hostId: String, state: ConnectionState)
         fun onSessions(hostId: String, sessions: List<BridgeSession>)
+        fun onProviderStatus(hostId: String, statuses: List<ProviderStatus>)
         fun onSnapshot(hostId: String, session: BridgeSession, items: List<TimelineItem>)
         fun onSessionCreated(hostId: String, session: BridgeSession)
         fun onTurnItem(hostId: String, item: TimelineItem)
@@ -78,7 +79,14 @@ class BridgeClient(private val listener: Listener) {
     }
 
     fun refreshAllSessions() {
-        sockets.keys.toList().forEach(::refreshSessions)
+        sockets.keys.toList().forEach {
+            refreshSessions(it)
+            requestProviderStatus(it)
+        }
+    }
+
+    fun requestProviderStatus(hostId: String) {
+        send(hostId, "provider.status", emptyMap())
     }
 
     fun sendTurn(hostId: String, sessionRef: String, text: String, model: String? = null, effort: String? = null) {
@@ -120,10 +128,14 @@ class BridgeClient(private val listener: Listener) {
             "auth.ready" -> {
                 listener.onConnectionChanged(pairing.id, ConnectionState.CONNECTED)
                 webSocket.send(BridgeProtocol.request(UUID.randomUUID().toString(), "session.list"))
+                webSocket.send(BridgeProtocol.request(UUID.randomUUID().toString(), "provider.status"))
             }
             "event" -> {
                 BridgeProtocol.parseSessions(response)?.let { sessions ->
                     listener.onSessions(pairing.id, sessions.map { it.withHost(pairing) })
+                }
+                BridgeProtocol.parseProviderStatus(response)?.let {
+                    listener.onProviderStatus(pairing.id, it)
                 }
                 BridgeProtocol.parseSnapshot(response)?.let { (session, items) ->
                     listener.onSnapshot(pairing.id, session.withHost(pairing), items)

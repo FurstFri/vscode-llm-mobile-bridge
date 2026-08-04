@@ -21,13 +21,22 @@ import type {
   ProviderTurnEvent,
   TurnOptions,
 } from "../gateway/provider-adapter.js";
-import type { TimelineItem } from "../gateway/protocol.js";
+import type { ProviderLimits, ProviderModel, TimelineItem } from "../gateway/protocol.js";
+
+/** Shape of the SDK's ModelInfo we rely on; extra fields are ignored. */
+export interface ClaudeModelInfo {
+  value: string;
+  displayName?: string;
+  description?: string;
+  supportedEffortLevels?: string[];
+}
 
 export interface ClaudeSessionSource {
   listSessions(options?: ListSessionsOptions): Promise<SDKSessionInfo[]>;
   getSessionInfo(sessionId: string, options?: GetSessionInfoOptions): Promise<SDKSessionInfo | undefined>;
   getSessionMessages(sessionId: string, options?: GetSessionMessagesOptions): Promise<SessionMessage[]>;
   runQuery(params: { prompt: string; options?: Options }): AsyncIterable<SDKMessage>;
+  listModels(options?: Options): Promise<ClaudeModelInfo[]>;
 }
 
 export type ClaudePermissionMode = "default" | "acceptEdits" | "bypassPermissions";
@@ -49,7 +58,32 @@ const sdkSource: ClaudeSessionSource = {
   getSessionInfo,
   getSessionMessages,
   runQuery: (params) => query(params),
+  listModels: async (options) => {
+    // Streaming-input mode with an idle prompt: the CLI starts and answers
+    // control requests, but no turn is ever submitted.
+    const session = query({ prompt: idlePrompt(), options });
+    try {
+      return await withTimeout(session.supportedModels(), 20_000) as ClaudeModelInfo[];
+    } finally {
+      await session.return(undefined).catch(() => undefined);
+    }
+  },
 };
+
+async function* idlePrompt(): AsyncGenerator<never> {
+  await new Promise<never>(() => {});
+  throw new Error("unreachable");
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("Timed out listing Claude models")), ms);
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error: unknown) => { clearTimeout(timer); reject(error instanceof Error ? error : new Error(String(error))); },
+    );
+  });
+}
 
 export class ClaudeReadOnlyAdapter implements ProviderAdapter {
   readonly provider = "claude" as const;
@@ -61,6 +95,10 @@ export class ClaudeReadOnlyAdapter implements ProviderAdapter {
   private readonly configuredExecutable?: string;
   private readonly defaultCwd?: string;
   private resolvedExecutable?: string | null;
+  /** Model list is stable for the CLI's lifetime; fetching it spawns a process. */
+  private models?: ProviderModel[];
+  /** Claude reports usage as a stream event, so keep the newest one seen. */
+  private limits?: ProviderLimits;
 
   constructor(options: ClaudeReadOnlyAdapterOptions = {}) {
     this.dir = options.dir;
@@ -70,6 +108,25 @@ export class ClaudeReadOnlyAdapter implements ProviderAdapter {
     this.configuredExecutable = options.executablePath;
     this.defaultCwd = options.defaultCwd;
     this.source = options.source ?? sdkSource;
+  }
+
+  async listModels(): Promise<readonly ProviderModel[]> {
+    if (this.models) return this.models;
+    const infos = await this.source.listModels(this.baseQueryOptions());
+    this.models = infos.map((info) => ({
+      id: info.value,
+      label: info.displayName ?? info.value,
+      ...(info.description ? { description: info.description } : {}),
+      efforts: info.supportedEffortLevels ?? [],
+      isDefault: info.value === "default",
+    }));
+    return this.models;
+  }
+
+  async readLimits(): Promise<ProviderLimits | undefined> {
+    // The CLI only reports usage while a turn streams, so this stays empty
+    // until the first message is sent from the phone or seen from VS Code.
+    return this.limits ?? { note: "Появится после первого ответа" };
   }
 
   async listSessions(): Promise<readonly ProviderSessionSummary[]> {
@@ -119,6 +176,7 @@ export class ClaudeReadOnlyAdapter implements ProviderAdapter {
       },
     });
     for await (const message of stream) {
+      this.captureRateLimit(message);
       yield* mapClaudeStreamMessage(message);
     }
   }
@@ -135,6 +193,7 @@ export class ClaudeReadOnlyAdapter implements ProviderAdapter {
     });
     let announced = false;
     for await (const message of stream) {
+      this.captureRateLimit(message);
       const record = message as unknown as Record<string, unknown>;
       if (!announced && typeof record.session_id === "string" && record.session_id) {
         announced = true;
@@ -168,6 +227,29 @@ export class ClaudeReadOnlyAdapter implements ProviderAdapter {
       // its optional native binary — point it at the installed CLI.
       ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
       ...(extra as Partial<Options>),
+    };
+  }
+
+  private captureRateLimit(message: SDKMessage): void {
+    const record = message as unknown as Record<string, unknown>;
+    if (record.type !== "rate_limit_event") return;
+    const info = asObject(record.rate_limit_info);
+    if (!info) return;
+    const raw = typeof info.utilization === "number" ? info.utilization : undefined;
+    // The field is a share on some builds and a percentage on others; values
+    // at or below 1 are treated as a fraction.
+    const usedPercent = raw === undefined
+      ? undefined
+      : Math.round(raw <= 1 ? raw * 100 : raw);
+    this.limits = {
+      ...(usedPercent !== undefined ? { usedPercent } : {}),
+      ...(typeof info.resetsAt === "number" ? { resetsAt: info.resetsAt } : {}),
+      ...(windowMinutesFor(info.rateLimitType) !== undefined
+        ? { windowMinutes: windowMinutesFor(info.rateLimitType) }
+        : {}),
+      ...(info.status === "allowed" || info.status === "rejected"
+        ? { status: info.status }
+        : info.status === "allowed_warning" ? { status: "warning" as const } : {}),
     };
   }
 
@@ -345,6 +427,12 @@ function asObject(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
     : undefined;
+}
+
+function windowMinutesFor(rateLimitType: unknown): number | undefined {
+  if (typeof rateLimitType !== "string") return undefined;
+  if (rateLimitType === "five_hour") return 5 * 60;
+  return rateLimitType.startsWith("seven_day") ? 7 * 24 * 60 : undefined;
 }
 
 function projectName(cwd: string): string | undefined {

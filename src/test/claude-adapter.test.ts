@@ -146,6 +146,46 @@ test("startTurn resumes the session with query and streams normalized events", a
   ]);
 });
 
+test("maps the Claude model list with its effort levels", async () => {
+  const adapter = new ClaudeReadOnlyAdapter({ source: source() });
+
+  const models = await adapter.listModels();
+
+  assert.deepEqual(models, [
+    {
+      id: "default",
+      label: "Default (recommended)",
+      description: "Opus",
+      efforts: ["low", "high", "max"],
+      isDefault: true,
+    },
+    { id: "haiku", label: "Haiku", description: "Fastest", efforts: [], isDefault: false },
+  ]);
+});
+
+test("captures the rate limit reported during a turn", async () => {
+  const adapter = new ClaudeReadOnlyAdapter({
+    source: source({
+      runQuery: () => streamOf([
+        {
+          type: "rate_limit_event",
+          rate_limit_info: { status: "allowed", utilization: 62, resetsAt: 1786275247, rateLimitType: "seven_day" },
+        } as unknown as SDKMessage,
+      ]),
+    }),
+  });
+
+  assert.deepEqual(await adapter.readLimits(), { note: "Появится после первого ответа" });
+  for await (const _event of adapter.startTurn(sessionInfo.sessionId, "hi")) void _event;
+
+  assert.deepEqual(await adapter.readLimits(), {
+    usedPercent: 62,
+    resetsAt: 1786275247,
+    windowMinutes: 10080,
+    status: "allowed",
+  });
+});
+
 test("startTurn applies model and effort overrides", async () => {
   const queries: Array<{ prompt: string; options?: Options }> = [];
   const adapter = new ClaudeReadOnlyAdapter({
@@ -269,6 +309,10 @@ function source(overrides: Partial<ClaudeSessionSource> = {}): ClaudeSessionSour
     getSessionInfo: async (_sessionId: string, _options?: GetSessionInfoOptions) => sessionInfo,
     getSessionMessages: async (_sessionId: string, _options?: GetSessionMessagesOptions) => messages,
     runQuery: () => streamOf([]),
+    listModels: async () => [
+      { value: "default", displayName: "Default (recommended)", description: "Opus", supportedEffortLevels: ["low", "high", "max"] },
+      { value: "haiku", displayName: "Haiku", description: "Fastest" },
+    ],
     ...overrides,
   };
 }

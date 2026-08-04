@@ -9,6 +9,14 @@ import type { MobileRequest, MobileResponse } from "../transport/mobile-protocol
 class TransportFakeAdapter implements ProviderAdapter {
   readonly provider = "claude" as const;
 
+  async listModels() {
+    return [{ id: "opus", label: "Opus", efforts: ["low", "max"], isDefault: true }];
+  }
+
+  async readLimits() {
+    return { usedPercent: 12, plan: "max" };
+  }
+
   async listSessions() {
     return [{
       providerSessionId: "private-session-id",
