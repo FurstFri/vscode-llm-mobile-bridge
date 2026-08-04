@@ -21,6 +21,13 @@ class BridgeController implements vscode.Disposable {
   private takeoverTimer?: NodeJS.Timeout;
   private healthTimer?: NodeJS.Timeout;
   private refSalt?: string;
+  /** True when a Remote-SSH window fell back to running us on this machine. */
+  runningLocallyInRemoteWindow = false;
+
+  /** Name this machine reports to the phone. */
+  get machineName(): string {
+    return vscode.workspace.getConfiguration("llmMobileBridge").get<string>("hostName", "").trim() || hostname();
+  }
   /** An explicit stop must not be undone by the health check. */
   private stoppedByUser = false;
   private readonly status: vscode.StatusBarItem;
@@ -201,8 +208,14 @@ class BridgeController implements vscode.Disposable {
     // means nothing to the local session stores, so ignore it entirely.
     const workspace = vscode.workspace.workspaceFolders?.[0]?.uri;
     const folder = workspace?.scheme === "file" ? workspace.fsPath : undefined;
-    if (workspace && !folder) {
-      this.output.info(`Remote workspace (${workspace.scheme}) ignored; using local sessions and home directory.`);
+    // A remote workspace here means VS Code could not run us on the remote
+    // host — the extension is missing there — and fell back to this machine.
+    this.runningLocallyInRemoteWindow = Boolean(workspace && !folder);
+    if (this.runningLocallyInRemoteWindow) {
+      this.output.warn(
+        `This window is connected to a remote (${workspace?.scheme}), but the extension is running locally, `
+        + "so it serves this machine's sessions. Install it on the remote host to reach that machine's chats.",
+      );
     }
     const dir = scope === "workspace" ? folder : undefined;
     // New chats started from the phone run in the open workspace folder.
@@ -245,6 +258,8 @@ class BridgeController implements vscode.Disposable {
 
 type BridgeTreeNode =
   | { kind: "status" }
+  | { kind: "relay" }
+  | { kind: "remoteWarning" }
   | { kind: "action"; label: string; icon: string; command: string }
   | { kind: "provider"; provider: "claude" | "codex"; label: string }
   | { kind: "session"; session: SessionDescriptor }
@@ -284,6 +299,41 @@ class BridgeTreeProvider implements vscode.TreeDataProvider<BridgeTreeNode> {
       );
       item.iconPath = new vscode.ThemeIcon(running ? "radio-tower" : "debug-disconnect");
       item.contextValue = running ? "gatewayRunning" : "gatewayStopped";
+      return item;
+    }
+    if (node.kind === "relay") {
+      const relayUrl = vscode.workspace.getConfiguration("llmMobileBridge").get<string>("relayUrl", "").trim();
+      const item = new vscode.TreeItem(
+        relayUrl ? `Ретранслятор: ${relayUrl}` : "Ретранслятор не настроен — телефон не увидит эту машину",
+      );
+      item.iconPath = new vscode.ThemeIcon(
+        relayUrl ? "cloud" : "warning",
+        relayUrl ? undefined : new vscode.ThemeColor("problemsWarningIcon.foreground"),
+      );
+      item.description = `${this.controller.machineName}`;
+      item.tooltip = relayUrl
+        ? `Эта машина («${this.controller.machineName}») подключается к ретранслятору сама. `
+          + "Скопируйте пейринг и добавьте её в приложении."
+        : "Задайте llmMobileBridge.relayUrl. В окне Remote-SSH настройка пишется в раздел Remote — "
+          + "локальное значение сюда не наследуется.";
+      item.command = {
+        command: "workbench.action.openSettings",
+        title: "Открыть настройки",
+        arguments: ["llmMobileBridge.relayUrl"],
+      };
+      return item;
+    }
+    if (node.kind === "remoteWarning") {
+      const item = new vscode.TreeItem("Не установлено на сервере — показаны чаты этого ПК");
+      item.iconPath = new vscode.ThemeIcon("warning", new vscode.ThemeColor("problemsWarningIcon.foreground"));
+      item.tooltip =
+        "Окно подключено по Remote-SSH, но расширение там не установлено, поэтому VS Code запустил его на этом "
+        + "компьютере. Нажмите, чтобы открыть Extensions и установить его на сервер.";
+      item.command = {
+        command: "workbench.extensions.search",
+        title: "Открыть Extensions",
+        arguments: ["@id:furstfri.vscode-llm-mobile-bridge"],
+      };
       return item;
     }
     if (node.kind === "action") {
@@ -326,6 +376,8 @@ class BridgeTreeProvider implements vscode.TreeDataProvider<BridgeTreeNode> {
         : [{ kind: "action", label: "Запустить шлюз", icon: "play", command: "llmMobileBridge.start" }];
       return [
         { kind: "status" },
+        { kind: "relay" },
+        ...(this.controller.runningLocallyInRemoteWindow ? [{ kind: "remoteWarning" as const }] : []),
         ...actions,
         { kind: "provider", provider: "claude", label: "Claude Code" },
         { kind: "provider", provider: "codex", label: "Codex" },
