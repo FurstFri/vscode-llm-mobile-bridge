@@ -84,12 +84,27 @@ object BridgeProtocol {
         }?.takeIf(String::isNotBlank)
     }
 
-    /** Extracts the message from a gateway-level error event. */
+    /** Extracts the message from a gateway-level error or conflict event. */
     fun parseEventError(response: JSONObject): String? {
         val event = anyEvent(response) ?: return null
-        if (event.optString("type") != "error") return null
-        return event.optJSONObject("payload")?.optString("message")?.takeIf(String::isNotBlank)
-            ?: "Gateway reported an error"
+        when (event.optString("type")) {
+            "error" -> {
+                val payload = event.optJSONObject("payload")
+                val message = payload?.optString("message")?.takeIf(String::isNotBlank)
+                    ?: "Gateway reported an error"
+                val detail = payload?.optString("detail")?.takeIf(String::isNotBlank)
+                return if (detail != null) "$message\n$detail" else message
+            }
+            "session.conflict" -> {
+                val reason = event.optJSONObject("payload")?.optString("reason")
+                return when (reason) {
+                    "writer_active" -> "Сессия занята другим устройством — дождитесь окончания хода."
+                    "unresolved_conflict" -> "Сессия в конфликте — обновите чат и попробуйте снова."
+                    else -> "Сессия недоступна для записи, попробуйте ещё раз."
+                }
+            }
+            else -> return null
+        }
     }
 
     fun isTurnEnd(response: JSONObject): Boolean =

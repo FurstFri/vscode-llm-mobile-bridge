@@ -103,13 +103,11 @@ export class SessionRegistry {
 
   reconcileSnapshot(ref: string, revision: SessionRevision, observedState: "idle" | "busy"): SessionDescriptor {
     const session = this.require(ref);
-    const changed = session.revision !== revision;
     session.revision = revision;
-    if (session.writer && changed) {
-      session.state = "conflict";
-    } else if (!session.writer) {
-      session.state = observedState;
-    }
+    // While our own writer holds the lease, revision changes are expected —
+    // the streamed turn writes into the provider's session storage, so a
+    // concurrent snapshot poll must not flag a conflict against ourselves.
+    if (!session.writer) session.state = observedState;
     return this.snapshot(session);
   }
 

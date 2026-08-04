@@ -2,7 +2,7 @@
   "name": "vscode-llm-mobile-bridge",
   "displayName": "LLM Mobile Bridge",
   "description": "A privacy-first mobile view of local Claude Code and Codex sessions.",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "private": true,
   "publisher": "furstfri",
   "repository": {

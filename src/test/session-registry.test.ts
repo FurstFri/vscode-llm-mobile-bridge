@@ -20,15 +20,18 @@ test("allows exactly one writer and returns to idle on release", () => {
   assert.equal(registry.get("mobile-session")?.state, "idle");
 });
 
-test("marks an externally changed session as conflicting while a writer is active", () => {
+test("keeps the session busy when its own turn changes the revision", () => {
   const registry = new SessionRegistry();
   registry.register({ ref: "mobile-session", provider: "claude", providerSessionId: "session_test" });
   const lease = registry.claimWriter("mobile-session", "android-device");
   assert.equal(lease.ok, true);
 
+  // A streamed turn writes into provider storage, so snapshot polls observe
+  // new revisions while the writer is active — that must not self-conflict.
   const event = registry.updateObservedRevision("mobile-session", 12);
-  assert.equal(event.type, "session.conflict");
-  assert.equal(registry.get("mobile-session")?.state, "conflict");
+  assert.equal(event.type, "session.state");
+  assert.equal(registry.get("mobile-session")?.state, "busy");
+  assert.equal(registry.get("mobile-session")?.revision, 12);
 });
 
 test("does not report a conflict when an observed revision has not changed", () => {
@@ -42,16 +45,16 @@ test("does not report a conflict when an observed revision has not changed", () 
   assert.equal(registry.get("mobile-session")?.state, "busy");
 });
 
-test("keeps a conflict after release until a fresh snapshot reconciles it", () => {
+test("returns to idle after release and reconciles fresh snapshots", () => {
   const registry = new SessionRegistry();
   registry.register({ ref: "mobile-session", provider: "claude", providerSessionId: "session_test" });
   const claim = registry.claimWriter("mobile-session", "android-device");
   assert.equal(claim.ok, true);
   if (!claim.ok) return;
 
-  registry.updateObservedRevision("mobile-session", "changed-outside-gateway");
+  registry.updateObservedRevision("mobile-session", "changed-during-turn");
   claim.lease.release();
-  assert.equal(registry.get("mobile-session")?.state, "conflict");
+  assert.equal(registry.get("mobile-session")?.state, "idle");
 
   registry.reconcileSnapshot("mobile-session", "fresh-snapshot", "idle");
   assert.equal(registry.get("mobile-session")?.state, "idle");
