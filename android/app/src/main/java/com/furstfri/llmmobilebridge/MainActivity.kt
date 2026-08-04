@@ -29,6 +29,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -127,7 +129,8 @@ private fun BridgeScreen(state: BridgeUiState, model: BridgeViewModel) {
     Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
         when {
             state.pairing == null -> PairingScreen(state, model, padding)
-            state.selectedSession != null -> TimelineScreen(state, model, padding)
+            state.selectedSession != null || state.newChatProvider != null ->
+                TimelineScreen(state, model, padding)
             else -> SessionsScreen(state, model, padding)
         }
     }
@@ -248,9 +251,13 @@ private fun SessionsScreen(state: BridgeUiState, model: BridgeViewModel, padding
             state = pagerState,
             modifier = Modifier.weight(1f).fillMaxWidth(),
         ) { page ->
-            val provider = ProviderPages[page].second
+            val (label, provider, accent) = ProviderPages[page]
             val sessions = state.sessions.filter { it.provider == provider }
             LazyColumn(Modifier.fillMaxSize()) {
+                item {
+                    NewChatRow(accent) { model.startNewChat(provider) }
+                    HorizontalDivider(color = Vs.Surface, thickness = 1.dp)
+                }
                 items(sessions, key = BridgeSession::ref) { session ->
                     SessionRow(session) { model.select(session) }
                     HorizontalDivider(color = Vs.Surface, thickness = 1.dp)
@@ -258,7 +265,7 @@ private fun SessionsScreen(state: BridgeUiState, model: BridgeViewModel, padding
                 if (sessions.isEmpty() && state.connection == ConnectionState.CONNECTED) {
                     item {
                         Text(
-                            "Сессий ${ProviderPages[page].first} нет. Нажмите «Обновить» или проверьте настройки шлюза.",
+                            "Сессий $label нет — начните новый чат сверху.",
                             modifier = Modifier.padding(16.dp),
                             color = Vs.Dim,
                             fontSize = 13.sp,
@@ -267,6 +274,26 @@ private fun SessionsScreen(state: BridgeUiState, model: BridgeViewModel, padding
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun NewChatRow(accent: Color, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier.size(18.dp).border(1.dp, accent, RoundedCornerShape(5.dp)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text("+", color = accent, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+        }
+        Spacer(Modifier.width(10.dp))
+        Text("Новый чат", color = accent, fontSize = 14.sp, fontWeight = FontWeight.Medium)
     }
 }
 
@@ -309,14 +336,16 @@ private fun SessionRow(session: BridgeSession, onClick: () -> Unit) {
 
 @Composable
 private fun TimelineScreen(state: BridgeUiState, model: BridgeViewModel, padding: PaddingValues) {
-    val session = state.selectedSession ?: return
+    val session = state.selectedSession
+    val provider = session?.provider ?: state.newChatProvider ?: return
     val expanded = remember { mutableStateMapOf<String, Boolean>() }
     val listState = rememberLazyListState()
     var firstLoad by remember { mutableStateOf(true) }
 
     // Live updates: the gateway is pull-based, so poll the open chat's
     // snapshot — turns driven from VS Code appear on the phone too.
-    LaunchedEffect(session.ref) {
+    LaunchedEffect(session?.ref) {
+        if (session == null) return@LaunchedEffect
         while (true) {
             delay(5_000)
             model.refreshTimeline()
@@ -339,19 +368,19 @@ private fun TimelineScreen(state: BridgeUiState, model: BridgeViewModel, padding
     }
 
     val lastActivity = maxOf(
-        session.updatedAt ?: 0L,
+        session?.updatedAt ?: 0L,
         state.timeline.maxOfOrNull { it.at ?: 0L } ?: 0L,
     ).takeIf { it > 0L }
     Column(Modifier.fillMaxSize().padding(padding)) {
         PanelHeader(
-            title = session.title,
+            title = session?.title ?: "Новый чат",
             subtitle = listOfNotNull(
-                providerLabel(session.provider),
-                session.project,
-                session.state,
+                providerLabel(provider),
+                session?.project,
+                session?.state ?: if (state.sending) "создаётся…" else "не начат",
                 lastActivity?.let { "обновлено ${formatWhen(it)}" },
             ).joinToString(" · "),
-            statusColor = providerColor(session.provider),
+            statusColor = providerColor(provider),
             action = "‹ Назад" to model::closeTimeline,
         )
         state.error?.let { ErrorText(it, Modifier.padding(horizontal = 16.dp)) }
@@ -361,6 +390,16 @@ private fun TimelineScreen(state: BridgeUiState, model: BridgeViewModel, padding
             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
+            if (session == null && state.timeline.isEmpty()) {
+                item {
+                    Text(
+                        "Новый чат ${providerLabel(provider)}. Напишите первое сообщение — сессия будет создана в рабочей папке VS Code.",
+                        color = Vs.Dim,
+                        fontSize = 13.sp,
+                        lineHeight = 18.sp,
+                    )
+                }
+            }
             items(state.timeline, key = TimelineItem::id) { item ->
                 TimelineEntry(
                     item = item,
@@ -369,7 +408,7 @@ private fun TimelineScreen(state: BridgeUiState, model: BridgeViewModel, padding
                 )
             }
         }
-        if (session.capabilities.canStartTurn) {
+        if (session?.capabilities?.canStartTurn != false) {
             Composer(state, model)
         } else {
             HorizontalDivider(color = Vs.Border, thickness = 1.dp)
@@ -501,12 +540,46 @@ private fun ToolEntry(item: TimelineItem, expanded: Boolean, onToggle: () -> Uni
     }
 }
 
+/** Model choices per provider; the empty value means "provider default". */
+private val ClaudeModels = listOf(
+    "" to "модель по умолчанию",
+    "opus" to "Opus",
+    "sonnet" to "Sonnet",
+    "haiku" to "Haiku",
+)
+
+private val CodexModels = listOf(
+    "" to "модель по умолчанию",
+    "gpt-5.1-codex-max" to "GPT-5.1 Codex Max",
+    "gpt-5.1-codex" to "GPT-5.1 Codex",
+    "gpt-5.1" to "GPT-5.1",
+)
+
+/** Thinking / effort levels; "off" disables extended thinking. */
+private val EffortLevels = listOf(
+    "" to "размышление: авто",
+    "off" to "размышление: выкл",
+    "low" to "размышление: low",
+    "medium" to "размышление: medium",
+    "high" to "размышление: high",
+    "xhigh" to "размышление: xhigh",
+    "max" to "размышление: max",
+)
+
+private fun modelsFor(provider: String) = if (provider == "codex") CodexModels else ClaudeModels
+
+private fun shortLabel(options: List<Pair<String, String>>, value: String, fallback: String): String =
+    options.firstOrNull { it.first == value }?.second?.substringAfter(": ")?.takeIf { value.isNotEmpty() } ?: fallback
+
 /** Composer modeled on the Claude Code panel: accent-bordered box with a
- *  text area on top and the +, / and send controls on the bottom row. */
+ *  text area on top and the model / thinking / send controls below. */
 @Composable
 private fun Composer(state: BridgeUiState, model: BridgeViewModel) {
-    val accent = providerColor(state.selectedSession?.provider ?: "claude")
+    val provider = state.selectedSession?.provider ?: state.newChatProvider ?: "claude"
+    val accent = providerColor(provider)
     val canSend = !state.sending && state.composerText.isNotBlank()
+    var modelMenu by remember { mutableStateOf(false) }
+    var effortMenu by remember { mutableStateOf(false) }
     Column(
         Modifier
             .fillMaxWidth()
@@ -550,10 +623,57 @@ private fun Composer(state: BridgeUiState, model: BridgeViewModel) {
                 Modifier.fillMaxWidth().padding(start = 10.dp, end = 8.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                ComposerChip("+", enabled = false) {}
+                val models = modelsFor(provider)
+                Box {
+                    ComposerChip(
+                        label = shortLabel(models, state.turnModel, "модель"),
+                        enabled = !state.sending,
+                        accent = if (state.turnModel.isNotEmpty()) accent else null,
+                    ) { modelMenu = true }
+                    DropdownMenu(
+                        expanded = modelMenu,
+                        onDismissRequest = { modelMenu = false },
+                        containerColor = Vs.SurfaceRaised,
+                    ) {
+                        models.forEach { (value, label) ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        label,
+                                        fontSize = 13.sp,
+                                        color = if (state.turnModel == value) accent else Vs.Foreground,
+                                    )
+                                },
+                                onClick = { model.setTurnModel(value); modelMenu = false },
+                            )
+                        }
+                    }
+                }
                 Spacer(Modifier.width(8.dp))
-                ComposerChip("/", enabled = !state.sending) {
-                    if (!state.composerText.startsWith("/")) model.updateComposer("/" + state.composerText)
+                Box {
+                    ComposerChip(
+                        label = shortLabel(EffortLevels, state.turnEffort, "размышление"),
+                        enabled = !state.sending,
+                        accent = if (state.turnEffort.isNotEmpty()) accent else null,
+                    ) { effortMenu = true }
+                    DropdownMenu(
+                        expanded = effortMenu,
+                        onDismissRequest = { effortMenu = false },
+                        containerColor = Vs.SurfaceRaised,
+                    ) {
+                        EffortLevels.forEach { (value, label) ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        label,
+                                        fontSize = 13.sp,
+                                        color = if (state.turnEffort == value) accent else Vs.Foreground,
+                                    )
+                                },
+                                onClick = { model.setTurnEffort(value); effortMenu = false },
+                            )
+                        }
+                    }
                 }
                 Spacer(Modifier.weight(1f))
                 Box(
@@ -571,15 +691,22 @@ private fun Composer(state: BridgeUiState, model: BridgeViewModel) {
 }
 
 @Composable
-private fun ComposerChip(label: String, enabled: Boolean, onClick: () -> Unit) {
-    Box(
+private fun ComposerChip(label: String, enabled: Boolean, accent: Color? = null, onClick: () -> Unit) {
+    Row(
         modifier = Modifier
-            .size(26.dp)
-            .border(1.dp, Vs.Border, RoundedCornerShape(6.dp))
-            .clickable(enabled = enabled, onClick = onClick),
-        contentAlignment = Alignment.Center,
+            .border(1.dp, accent ?: Vs.Border, RoundedCornerShape(6.dp))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(label, color = if (enabled) Vs.Dim else Vs.Faint, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
+        Text(
+            label,
+            color = accent ?: if (enabled) Vs.Dim else Vs.Faint,
+            fontSize = 11.sp,
+            maxLines = 1,
+        )
+        Spacer(Modifier.width(4.dp))
+        Text("▾", color = accent ?: Vs.Faint, fontSize = 9.sp)
     }
 }
 

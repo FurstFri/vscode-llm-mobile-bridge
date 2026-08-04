@@ -56,12 +56,44 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application),
     }
 
     fun select(session: BridgeSession) {
-        mutableState.update { it.copy(selectedSession = session, timeline = emptyList(), error = null) }
+        mutableState.update {
+            it.copy(
+                selectedSession = session,
+                newChatProvider = null,
+                timeline = emptyList(),
+                turnModel = "",
+                turnEffort = "",
+                error = null,
+            )
+        }
         client.requestSnapshot(session.ref)
     }
 
+    fun startNewChat(provider: String) {
+        mutableState.update {
+            it.copy(
+                selectedSession = null,
+                newChatProvider = provider,
+                timeline = emptyList(),
+                composerText = "",
+                turnModel = "",
+                turnEffort = "",
+                sending = false,
+                error = null,
+            )
+        }
+    }
+
+    fun setTurnModel(value: String) {
+        mutableState.update { it.copy(turnModel = value) }
+    }
+
+    fun setTurnEffort(value: String) {
+        mutableState.update { it.copy(turnEffort = value) }
+    }
+
     fun closeTimeline() {
-        mutableState.update { it.copy(selectedSession = null, timeline = emptyList()) }
+        mutableState.update { it.copy(selectedSession = null, newChatProvider = null, timeline = emptyList()) }
     }
 
     fun refresh() {
@@ -81,9 +113,11 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application),
 
     fun sendMessage() {
         val current = state.value
-        val session = current.selectedSession ?: return
         val text = current.composerText.trim()
         if (text.isEmpty() || current.sending) return
+        val session = current.selectedSession
+        val newProvider = current.newChatProvider
+        if (session == null && newProvider == null) return
         val optimistic = TimelineItem(
             id = "local-${System.currentTimeMillis()}",
             kind = "message",
@@ -100,7 +134,11 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application),
                 error = null,
             )
         }
-        client.sendTurn(session.ref, text)
+        if (session != null) {
+            client.sendTurn(session.ref, text, current.turnModel, current.turnEffort)
+        } else if (newProvider != null) {
+            client.sendNewChat(newProvider, text, current.turnModel, current.turnEffort)
+        }
     }
 
     override fun onConnectionChanged(state: ConnectionState) = onUi {
@@ -121,6 +159,16 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application),
                 timeline = items,
                 error = null,
             )
+        }
+    }
+
+    override fun onSessionCreated(session: BridgeSession) = onUi {
+        mutableState.update { current ->
+            if (current.newChatProvider == session.provider) {
+                current.copy(selectedSession = session, newChatProvider = null)
+            } else {
+                current
+            }
         }
     }
 

@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { Provider } from "../model.js";
-import type { GatewayEvent, SessionDescriptor, SessionSnapshot } from "./protocol.js";
-import type { ProviderAdapter } from "./provider-adapter.js";
+import type { GatewayEvent, GatewayEventType, SessionDescriptor, SessionSnapshot } from "./protocol.js";
+import type { NewSessionAnnouncement, ProviderAdapter, TurnOptions } from "./provider-adapter.js";
 import { SessionRegistry } from "./session-registry.js";
+import type { WriterLease } from "./protocol.js";
 
 export class GatewayCore {
   private readonly adapters = new Map<Provider, ProviderAdapter>();
@@ -68,6 +69,7 @@ export class GatewayCore {
     owner: string,
     text: string,
     correlationId: string = randomUUID(),
+    options?: TurnOptions,
   ): AsyncGenerator<GatewayEvent> {
     if (!text.trim()) {
       yield this.registry.createEvent(ref, "error", {
@@ -96,7 +98,7 @@ export class GatewayCore {
     yield this.registry.createEvent(ref, "turn.start", { owner }, correlationId);
 
     try {
-      for await (const providerEvent of adapter.startTurn(binding.providerSessionId, text)) {
+      for await (const providerEvent of adapter.startTurn(binding.providerSessionId, text, options)) {
         yield this.registry.createEvent(ref, providerEvent.type, providerEvent.payload, correlationId);
       }
       this.log?.(`Turn completed (${binding.provider}).`);
@@ -114,6 +116,88 @@ export class GatewayCore {
 
     const state = this.registry.get(ref)?.state ?? "host_offline";
     yield this.registry.createEvent(ref, "session.state", { state }, correlationId);
+  }
+
+  /** Creates a fresh provider session and streams its first turn. */
+  async *startNewSession(
+    provider: Provider,
+    owner: string,
+    text: string,
+    correlationId: string = randomUUID(),
+    options?: TurnOptions,
+  ): AsyncGenerator<GatewayEvent> {
+    if (!text.trim()) {
+      yield this.gatewayEvent("error", {
+        code: "EMPTY_PROMPT",
+        message: "The prompt must not be empty.",
+      }, correlationId);
+      return;
+    }
+    const adapter = this.adapters.get(provider);
+    if (!adapter) {
+      yield this.gatewayEvent("error", {
+        code: "UNKNOWN_PROVIDER",
+        message: `Provider is not configured: ${provider}.`,
+      }, correlationId);
+      return;
+    }
+
+    this.log?.(`New session requested (${provider}, owner ${owner}).`);
+    let ref: string | undefined;
+    let lease: WriterLease | undefined;
+    try {
+      for await (const providerEvent of adapter.startNewSession(text, options)) {
+        if (providerEvent.type === "session.new") {
+          const announcement = providerEvent.payload as NewSessionAnnouncement;
+          const descriptor = this.registry.registerOrGet({
+            provider,
+            providerSessionId: announcement.providerSessionId,
+            title: announcement.title,
+            project: announcement.project,
+            updatedAt: announcement.updatedAt,
+          });
+          ref = descriptor.ref;
+          yield this.registry.createEvent(ref, "session.new", { session: this.registry.get(ref) }, correlationId);
+          const claim = this.registry.claimWriter(ref, owner, correlationId);
+          yield claim.event;
+          if (claim.ok) lease = claim.lease;
+          yield this.registry.createEvent(ref, "turn.start", { owner }, correlationId);
+        } else if (ref) {
+          yield this.registry.createEvent(ref, providerEvent.type, providerEvent.payload, correlationId);
+        }
+      }
+      this.log?.(`New session turn completed (${provider}).`);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      this.log?.(`New session turn failed (${provider}): ${detail}`);
+      const payload = {
+        code: "PROVIDER_TURN_FAILED",
+        message: "The provider could not complete the turn.",
+        detail,
+      };
+      yield ref
+        ? this.registry.createEvent(ref, "error", payload, correlationId)
+        : this.gatewayEvent("error", payload, correlationId);
+    } finally {
+      lease?.release();
+    }
+    if (ref) {
+      const state = this.registry.get(ref)?.state ?? "host_offline";
+      yield this.registry.createEvent(ref, "session.state", { state }, correlationId);
+    }
+  }
+
+  private gatewayEvent(type: GatewayEventType, payload: unknown, correlationId: string): GatewayEvent {
+    this.gatewaySequence += 1;
+    return {
+      protocolVersion: 1,
+      messageId: randomUUID(),
+      correlationId,
+      sessionRef: "gateway",
+      sequence: this.gatewaySequence,
+      type,
+      payload,
+    };
   }
 
   private requireAdapter(provider: Provider): ProviderAdapter {

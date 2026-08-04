@@ -19,6 +19,7 @@ import type {
   ProviderSessionSnapshot,
   ProviderSessionSummary,
   ProviderTurnEvent,
+  TurnOptions,
 } from "../gateway/provider-adapter.js";
 import type { TimelineItem } from "../gateway/protocol.js";
 
@@ -38,6 +39,8 @@ export interface ClaudeReadOnlyAdapterOptions {
   permissionMode?: ClaudePermissionMode;
   /** Explicit path to the claude executable; auto-resolved when omitted. */
   executablePath?: string;
+  /** Working directory for sessions created from the phone. */
+  defaultCwd?: string;
   source?: ClaudeSessionSource;
 }
 
@@ -56,6 +59,7 @@ export class ClaudeReadOnlyAdapter implements ProviderAdapter {
   private readonly permissionMode: ClaudePermissionMode;
   private readonly source: ClaudeSessionSource;
   private readonly configuredExecutable?: string;
+  private readonly defaultCwd?: string;
   private resolvedExecutable?: string | null;
 
   constructor(options: ClaudeReadOnlyAdapterOptions = {}) {
@@ -64,6 +68,7 @@ export class ClaudeReadOnlyAdapter implements ProviderAdapter {
     this.allowTurns = options.allowTurns ?? true;
     this.permissionMode = options.permissionMode ?? "default";
     this.configuredExecutable = options.executablePath;
+    this.defaultCwd = options.defaultCwd;
     this.source = options.source ?? sdkSource;
   }
 
@@ -99,27 +104,71 @@ export class ClaudeReadOnlyAdapter implements ProviderAdapter {
     };
   }
 
-  async *startTurn(providerSessionId: string, text: string): AsyncIterable<ProviderTurnEvent> {
+  async *startTurn(providerSessionId: string, text: string, options?: TurnOptions): AsyncIterable<ProviderTurnEvent> {
     if (!this.allowTurns) throw new Error("Sending messages to Claude sessions is disabled in settings.");
     const info = await this.source.getSessionInfo(
       providerSessionId,
       this.dir ? { dir: this.dir } : undefined,
     );
-    const executable = this.claudeExecutable();
     const stream = this.source.runQuery({
       prompt: text,
       options: {
         resume: providerSessionId,
         ...(info?.cwd ? { cwd: info.cwd } : {}),
-        permissionMode: this.permissionMode,
-        // The bundled extension has no node_modules, so the SDK cannot find
-        // its optional native binary — point it at the installed CLI.
-        ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
+        ...this.baseQueryOptions(options),
       },
     });
     for await (const message of stream) {
       yield* mapClaudeStreamMessage(message);
     }
+  }
+
+  async *startNewSession(text: string, options?: TurnOptions): AsyncIterable<ProviderTurnEvent> {
+    if (!this.allowTurns) throw new Error("Sending messages to Claude sessions is disabled in settings.");
+    const cwd = this.defaultCwd ?? this.dir;
+    const stream = this.source.runQuery({
+      prompt: text,
+      options: {
+        ...(cwd ? { cwd } : {}),
+        ...this.baseQueryOptions(options),
+      },
+    });
+    let announced = false;
+    for await (const message of stream) {
+      const record = message as unknown as Record<string, unknown>;
+      if (!announced && typeof record.session_id === "string" && record.session_id) {
+        announced = true;
+        yield {
+          type: "session.new",
+          payload: {
+            providerSessionId: record.session_id,
+            title: text.trim().slice(0, 60),
+            project: cwd ? projectName(cwd) : undefined,
+            updatedAt: Date.now(),
+          },
+        };
+      }
+      yield* mapClaudeStreamMessage(message);
+    }
+  }
+
+  private baseQueryOptions(turn?: TurnOptions): Partial<Options> {
+    const executable = this.claudeExecutable();
+    const extra: Record<string, unknown> = {};
+    if (turn?.model) extra.model = turn.model;
+    if (turn?.effort === "off") {
+      extra.thinking = { type: "disabled" };
+    } else if (turn?.effort) {
+      extra.effort = turn.effort;
+      extra.thinking = { type: "adaptive" };
+    }
+    return {
+      permissionMode: this.permissionMode,
+      // The bundled extension has no node_modules, so the SDK cannot find
+      // its optional native binary — point it at the installed CLI.
+      ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
+      ...(extra as Partial<Options>),
+    };
   }
 
   private claudeExecutable(): string | undefined {

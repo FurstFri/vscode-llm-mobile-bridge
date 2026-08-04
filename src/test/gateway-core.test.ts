@@ -5,6 +5,7 @@ import type {
   ProviderAdapter,
   ProviderSessionSnapshot,
   ProviderTurnEvent,
+  TurnOptions,
 } from "../gateway/provider-adapter.js";
 import type { GatewayEvent } from "../gateway/protocol.js";
 
@@ -24,7 +25,9 @@ class FakeAdapter implements ProviderAdapter {
     { type: "turn.status", payload: { status: "completed" } },
   ];
   failList = false;
-  receivedTurns: Array<{ providerSessionId: string; text: string }> = [];
+  receivedTurns: Array<{ providerSessionId: string; text: string; options?: TurnOptions }> = [];
+  receivedNewSessions: Array<{ text: string; options?: TurnOptions }> = [];
+  newSessionId = "private-new-thread";
 
   async listSessions() {
     if (this.failList) throw new Error("private provider diagnostic");
@@ -36,8 +39,17 @@ class FakeAdapter implements ProviderAdapter {
     return this.snapshot;
   }
 
-  async *startTurn(providerSessionId: string, text: string): AsyncIterable<ProviderTurnEvent> {
-    this.receivedTurns.push({ providerSessionId, text });
+  async *startTurn(providerSessionId: string, text: string, options?: TurnOptions): AsyncIterable<ProviderTurnEvent> {
+    this.receivedTurns.push({ providerSessionId, text, options });
+    for (const event of this.turnEvents) yield event;
+  }
+
+  async *startNewSession(text: string, options?: TurnOptions): AsyncIterable<ProviderTurnEvent> {
+    this.receivedNewSessions.push({ text, options });
+    yield {
+      type: "session.new",
+      payload: { providerSessionId: this.newSessionId, title: "Fresh chat", project: "workspace" },
+    };
     for (const event of this.turnEvents) yield event;
   }
 }
@@ -93,7 +105,11 @@ test("streams a turn with one correlation id and monotonic session sequence", as
   ]);
   assert.deepEqual(events.map((event) => event.sequence), [1, 2, 3, 4, 5]);
   assert.ok(events.every((event) => event.correlationId === "turn-request"));
-  assert.deepEqual(adapter.receivedTurns, [{ providerSessionId: adapter.providerSessionId, text: "continue" }]);
+  assert.deepEqual(adapter.receivedTurns, [{
+    providerSessionId: adapter.providerSessionId,
+    text: "continue",
+    options: undefined,
+  }]);
   assert.deepEqual(events.at(-1)?.payload, { state: "idle" });
 });
 
@@ -153,6 +169,58 @@ test("enforces read-only provider capabilities before claiming a writer", async 
     message: "This session is read-only until provider resume compatibility is approved.",
   });
   assert.deepEqual(adapter.receivedTurns, []);
+});
+
+test("creates a new provider session and registers it behind an opaque ref", async () => {
+  const adapter = new FakeAdapter();
+  const gateway = new GatewayCore([adapter]);
+
+  const events = await collect(gateway.startNewSession("codex", "android-device", "start something", "new-request"));
+
+  assert.deepEqual(adapter.receivedNewSessions, [{ text: "start something", options: undefined }]);
+  assert.deepEqual(events.map((event) => event.type), [
+    "session.new",
+    "session.state",
+    "turn.start",
+    "item.add",
+    "turn.status",
+    "session.state",
+  ]);
+  assert.ok(events.every((event) => event.correlationId === "new-request"));
+  const created = (events[0]?.payload as { session: { ref: string; title?: string } }).session;
+  assert.ok(created.ref);
+  assert.equal(created.title, "Fresh chat");
+  assert.equal(JSON.stringify(events).includes(adapter.newSessionId), false);
+
+  // The new session is listed like any other and keeps its reference.
+  const listed = await gateway.listSessions();
+  assert.equal(listed.payload.sessions.some((session) => session.ref === created.ref), true);
+});
+
+test("forwards model and effort overrides to the provider", async () => {
+  const adapter = new FakeAdapter();
+  const gateway = new GatewayCore([adapter]);
+  const listed = await gateway.listSessions();
+  const ref = listed.payload.sessions[0]?.ref;
+  assert.ok(ref);
+
+  await collect(gateway.startTurn(ref, "android-device", "continue", "turn-1", { model: "opus", effort: "high" }));
+
+  assert.deepEqual(adapter.receivedTurns, [{
+    providerSessionId: adapter.providerSessionId,
+    text: "continue",
+    options: { model: "opus", effort: "high" },
+  }]);
+});
+
+test("rejects a new session for an unconfigured provider", async () => {
+  const gateway = new GatewayCore([new FakeAdapter()]);
+
+  const events = await collect(gateway.startNewSession("claude", "android-device", "hello"));
+
+  assert.equal(events.length, 1);
+  assert.equal(events[0]?.type, "error");
+  assert.equal((events[0]?.payload as { code: string }).code, "UNKNOWN_PROVIDER");
 });
 
 async function collect(events: AsyncIterable<GatewayEvent>): Promise<GatewayEvent[]> {

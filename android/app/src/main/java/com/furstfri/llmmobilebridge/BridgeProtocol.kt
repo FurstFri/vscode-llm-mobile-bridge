@@ -110,6 +110,14 @@ object BridgeProtocol {
     fun isTurnEnd(response: JSONObject): Boolean =
         response.optBoolean("ok") && response.optString("type") == "turn.end"
 
+    /** Parses the session descriptor announced for a freshly created chat. */
+    fun parseSessionCreated(response: JSONObject): BridgeSession? {
+        val event = anyEvent(response) ?: return null
+        if (event.optString("type") != "session.new") return null
+        val payload = event.optJSONObject("payload") ?: return null
+        return runCatching { session(payload.getJSONObject("session")) }.getOrNull()
+    }
+
     private fun anyEvent(response: JSONObject): JSONObject? {
         if (!response.optBoolean("ok") || response.optString("type") != "event") return null
         return response.optJSONObject("event")

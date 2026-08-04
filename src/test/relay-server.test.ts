@@ -27,6 +27,10 @@ class RelayFakeAdapter implements ProviderAdapter {
   async *startTurn(): AsyncIterable<ProviderTurnEvent> {
     throw new Error("read only");
   }
+
+  async *startNewSession(): AsyncIterable<ProviderTurnEvent> {
+    throw new Error("read only");
+  }
 }
 
 test("relay routes mobile frames through an outbound host without reading payloads", async () => {

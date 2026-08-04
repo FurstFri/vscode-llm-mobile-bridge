@@ -32,13 +32,18 @@ export async function runGatewayDaemon(config: GatewayDaemonConfig): Promise<voi
 
   const adapters: ProviderAdapter[] = [];
   if (config.enableClaude) {
-    adapters.push(new ClaudeReadOnlyAdapter({ dir: config.claudeProjectDir, allowTurns: config.allowTurns }));
+    adapters.push(new ClaudeReadOnlyAdapter({
+      dir: config.claudeProjectDir,
+      allowTurns: config.allowTurns,
+      defaultCwd: config.claudeProjectDir ?? process.cwd(),
+    }));
   }
   if (config.enableCodex) {
     adapters.push(new CodexReadOnlyAdapter({
       cwd: config.codexCwd,
       executable: config.codexExecutable,
       allowTurns: config.allowTurns,
+      defaultCwd: config.codexCwd ?? process.cwd(),
     }));
   }
 

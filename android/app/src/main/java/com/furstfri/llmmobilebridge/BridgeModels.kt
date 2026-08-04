@@ -43,8 +43,12 @@ data class BridgeUiState(
     val connection: ConnectionState = ConnectionState.DISCONNECTED,
     val sessions: List<BridgeSession> = emptyList(),
     val selectedSession: BridgeSession? = null,
+    /** Provider of a not-yet-created chat opened via "New chat". */
+    val newChatProvider: String? = null,
     val timeline: List<TimelineItem> = emptyList(),
     val composerText: String = "",
+    val turnModel: String = "",
+    val turnEffort: String = "",
     val sending: Boolean = false,
     val error: String? = null,
 )

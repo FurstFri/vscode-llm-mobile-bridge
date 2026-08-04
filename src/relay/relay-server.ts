@@ -238,6 +238,13 @@ function asForwardableMobileRequest(value: Record<string, unknown>): Exclude<Mob
   if (value.type === "turn.start" && typeof value.sessionRef === "string" && typeof value.text === "string") {
     return value as Exclude<MobileRequest, { type: "auth" }>;
   }
+  if (
+    value.type === "session.new"
+    && (value.provider === "claude" || value.provider === "codex")
+    && typeof value.text === "string"
+  ) {
+    return value as Exclude<MobileRequest, { type: "auth" }>;
+  }
   return undefined;
 }
 

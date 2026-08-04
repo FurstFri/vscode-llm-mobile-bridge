@@ -6,14 +6,20 @@ import type {
   ProviderSessionSnapshot,
   ProviderSessionSummary,
   ProviderTurnEvent,
+  TurnOptions,
 } from "../gateway/provider-adapter.js";
 import type { TimelineItem } from "../gateway/protocol.js";
 import { JsonRpcNotification, JsonRpcProcess } from "./json-rpc-client.js";
 
+export type CodexTurnSignal =
+  | { kind: "thread"; threadId: string }
+  | { kind: "notification"; notification: JsonRpcNotification };
+
 export interface CodexSessionSource {
   listThreads(): Promise<unknown>;
   readThread(threadId: string): Promise<unknown>;
-  runTurn(threadId: string, text: string): AsyncIterable<JsonRpcNotification>;
+  runTurn(threadId: string, text: string, options?: TurnOptions): AsyncIterable<JsonRpcNotification>;
+  runNewThread(text: string, options?: TurnOptions, cwd?: string): AsyncIterable<CodexTurnSignal>;
 }
 
 export interface CodexReadOnlyAdapterOptions {
@@ -21,6 +27,8 @@ export interface CodexReadOnlyAdapterOptions {
   limit?: number;
   allowTurns?: boolean;
   executable?: string;
+  /** Working directory for threads created from the phone. */
+  defaultCwd?: string;
   source?: CodexSessionSource;
 }
 
@@ -29,12 +37,14 @@ export class CodexReadOnlyAdapter implements ProviderAdapter {
   private readonly cwd?: string;
   private readonly limit: number;
   private readonly allowTurns: boolean;
+  private readonly defaultCwd?: string;
   private readonly source: CodexSessionSource;
 
   constructor(options: CodexReadOnlyAdapterOptions = {}) {
     this.cwd = options.cwd;
     this.limit = options.limit ?? 100;
     this.allowTurns = options.allowTurns ?? true;
+    this.defaultCwd = options.defaultCwd;
     this.source = options.source ?? new AppServerCodexSource(options.executable, this.limit);
   }
 
@@ -74,10 +84,30 @@ export class CodexReadOnlyAdapter implements ProviderAdapter {
     };
   }
 
-  async *startTurn(providerSessionId: string, text: string): AsyncIterable<ProviderTurnEvent> {
+  async *startTurn(providerSessionId: string, text: string, options?: TurnOptions): AsyncIterable<ProviderTurnEvent> {
     if (!this.allowTurns) throw new Error("Sending messages to Codex threads is disabled in settings.");
-    for await (const notification of this.source.runTurn(providerSessionId, text)) {
+    for await (const notification of this.source.runTurn(providerSessionId, text, options)) {
       yield* mapCodexNotification(notification);
+    }
+  }
+
+  async *startNewSession(text: string, options?: TurnOptions): AsyncIterable<ProviderTurnEvent> {
+    if (!this.allowTurns) throw new Error("Sending messages to Codex threads is disabled in settings.");
+    const cwd = this.defaultCwd ?? this.cwd;
+    for await (const signal of this.source.runNewThread(text, options, cwd)) {
+      if (signal.kind === "thread") {
+        yield {
+          type: "session.new",
+          payload: {
+            providerSessionId: signal.threadId,
+            title: text.trim().slice(0, 60),
+            project: cwd ? projectName(cwd) : undefined,
+            updatedAt: Date.now(),
+          },
+        };
+      } else {
+        yield* mapCodexNotification(signal.notification);
+      }
     }
   }
 }
@@ -110,46 +140,73 @@ class AppServerCodexSource implements CodexSessionSource {
     return this.request("thread/read", { threadId, includeTurns: true });
   }
 
-  async *runTurn(threadId: string, text: string): AsyncIterable<JsonRpcNotification> {
+  async *runTurn(threadId: string, text: string, options?: TurnOptions): AsyncIterable<JsonRpcNotification> {
     const appServer = await this.startAppServer();
     try {
       const resumed = await appServer.request("thread/resume", { threadId }, 30_000);
       if (resumed.error) throw new Error(resumed.error.message ?? "Codex thread/resume failed");
+      yield* this.streamTurn(appServer, threadId, text, options);
+    } finally {
+      appServer.close();
+    }
+  }
 
-      const queue: JsonRpcNotification[] = [];
-      let wake: (() => void) | undefined;
-      const unsubscribe = appServer.onNotification((notification) => {
-        queue.push(notification);
-        wake?.();
-      });
-      try {
-        const started = await appServer.request("turn/start", {
-          threadId,
-          input: [{ type: "text", text }],
-        }, 60_000);
-        if (started.error) throw new Error(started.error.message ?? "Codex turn/start failed");
-
-        const deadline = Date.now() + 10 * 60_000;
-        let finished = false;
-        while (!finished) {
-          while (queue.length === 0) {
-            if (Date.now() > deadline) throw new Error("Timed out waiting for the Codex turn to complete");
-            await new Promise<void>((resolve) => {
-              wake = resolve;
-              setTimeout(resolve, 1_000);
-            });
-            wake = undefined;
-          }
-          const notification = queue.shift();
-          if (!notification) continue;
-          yield notification;
-          if (notification.method === "turn/completed" || notification.method === "turn/failed") finished = true;
-        }
-      } finally {
-        unsubscribe();
+  async *runNewThread(text: string, options?: TurnOptions, cwd?: string): AsyncIterable<CodexTurnSignal> {
+    const appServer = await this.startAppServer();
+    try {
+      const started = await appServer.request("thread/start", cwd ? { cwd } : {}, 30_000);
+      if (started.error) throw new Error(started.error.message ?? "Codex thread/start failed");
+      const thread = asObject(asObject(started.result)?.thread);
+      const threadId = typeof thread?.id === "string" ? thread.id : undefined;
+      if (!threadId) throw new Error("Codex thread/start returned no thread id");
+      yield { kind: "thread", threadId };
+      for await (const notification of this.streamTurn(appServer, threadId, text, options)) {
+        yield { kind: "notification", notification };
       }
     } finally {
       appServer.close();
+    }
+  }
+
+  private async *streamTurn(
+    appServer: JsonRpcProcess,
+    threadId: string,
+    text: string,
+    options?: TurnOptions,
+  ): AsyncIterable<JsonRpcNotification> {
+    const queue: JsonRpcNotification[] = [];
+    let wake: (() => void) | undefined;
+    const unsubscribe = appServer.onNotification((notification) => {
+      queue.push(notification);
+      wake?.();
+    });
+    try {
+      const started = await appServer.request("turn/start", {
+        threadId,
+        input: [{ type: "text", text }],
+        ...(options?.model ? { model: options.model } : {}),
+        ...(options?.effort ? { effort: options.effort } : {}),
+      }, 60_000);
+      if (started.error) throw new Error(started.error.message ?? "Codex turn/start failed");
+
+      const deadline = Date.now() + 10 * 60_000;
+      let finished = false;
+      while (!finished) {
+        while (queue.length === 0) {
+          if (Date.now() > deadline) throw new Error("Timed out waiting for the Codex turn to complete");
+          await new Promise<void>((resolve) => {
+            wake = resolve;
+            setTimeout(resolve, 1_000);
+          });
+          wake = undefined;
+        }
+        const notification = queue.shift();
+        if (!notification) continue;
+        yield notification;
+        if (notification.method === "turn/completed" || notification.method === "turn/failed") finished = true;
+      }
+    } finally {
+      unsubscribe();
     }
   }
 

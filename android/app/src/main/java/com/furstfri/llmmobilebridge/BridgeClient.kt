@@ -14,6 +14,7 @@ class BridgeClient(private val listener: Listener) {
         fun onConnectionChanged(state: ConnectionState)
         fun onSessions(sessions: List<BridgeSession>)
         fun onSnapshot(session: BridgeSession, items: List<TimelineItem>)
+        fun onSessionCreated(session: BridgeSession)
         fun onTurnItem(item: TimelineItem)
         fun onTurnState(state: String)
         fun onTurnEnd()
@@ -69,11 +70,29 @@ class BridgeClient(private val listener: Listener) {
         socket?.send(BridgeProtocol.request(UUID.randomUUID().toString(), "session.list"))
     }
 
-    fun sendTurn(sessionRef: String, text: String) {
+    fun sendTurn(sessionRef: String, text: String, model: String? = null, effort: String? = null) {
         socket?.send(BridgeProtocol.request(
             id = UUID.randomUUID().toString(),
             type = "turn.start",
-            fields = mapOf("sessionRef" to sessionRef, "text" to text),
+            fields = buildMap {
+                put("sessionRef", sessionRef)
+                put("text", text)
+                model?.takeIf(String::isNotBlank)?.let { put("model", it) }
+                effort?.takeIf(String::isNotBlank)?.let { put("effort", it) }
+            },
+        ))
+    }
+
+    fun sendNewChat(provider: String, text: String, model: String? = null, effort: String? = null) {
+        socket?.send(BridgeProtocol.request(
+            id = UUID.randomUUID().toString(),
+            type = "session.new",
+            fields = buildMap {
+                put("provider", provider)
+                put("text", text)
+                model?.takeIf(String::isNotBlank)?.let { put("model", it) }
+                effort?.takeIf(String::isNotBlank)?.let { put("effort", it) }
+            },
         ))
     }
 
@@ -97,6 +116,7 @@ class BridgeClient(private val listener: Listener) {
                 BridgeProtocol.parseSnapshot(response)?.let { (session, items) ->
                     listener.onSnapshot(session, items)
                 }
+                BridgeProtocol.parseSessionCreated(response)?.let(listener::onSessionCreated)
                 BridgeProtocol.parseTurnItem(response)?.let(listener::onTurnItem)
                 BridgeProtocol.parseTurnState(response)?.let(listener::onTurnState)
                 BridgeProtocol.parseEventError(response)?.let(listener::onError)

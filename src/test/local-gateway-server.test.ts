@@ -32,6 +32,15 @@ class TransportFakeAdapter implements ProviderAdapter {
     };
     yield { type: "turn.status", payload: { status: "completed" } };
   }
+
+  async *startNewSession(text: string): AsyncIterable<ProviderTurnEvent> {
+    yield { type: "session.new", payload: { providerSessionId: "private-new-id", title: "Fresh mobile chat" } };
+    yield {
+      type: "item.complete",
+      payload: { item: { id: "reply-new", kind: "message", role: "assistant", text: `new: ${text}` } },
+    };
+    yield { type: "turn.status", payload: { status: "completed" } };
+  }
 }
 
 test("requires authentication and serves list/snapshot over the mobile protocol", async () => {

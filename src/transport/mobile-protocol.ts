@@ -7,7 +7,24 @@ export type MobileRequest =
   | { protocolVersion: 1; id: string; type: "ping" }
   | { protocolVersion: 1; id: string; type: "session.list" }
   | { protocolVersion: 1; id: string; type: "session.snapshot"; sessionRef: string }
-  | { protocolVersion: 1; id: string; type: "turn.start"; sessionRef: string; text: string };
+  | {
+      protocolVersion: 1;
+      id: string;
+      type: "turn.start";
+      sessionRef: string;
+      text: string;
+      model?: string;
+      effort?: string;
+    }
+  | {
+      protocolVersion: 1;
+      id: string;
+      type: "session.new";
+      provider: "claude" | "codex";
+      text: string;
+      model?: string;
+      effort?: string;
+    };
 
 export type MobileResponse =
   | { protocolVersion: 1; id: string; ok: true; type: "auth.ready" | "pong" | "turn.end" }

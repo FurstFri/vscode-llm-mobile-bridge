@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { homedir } from "node:os";
 import * as vscode from "vscode";
 import { GatewayCore } from "./gateway/gateway-core.js";
 import type { SessionDescriptor, TimelineItem } from "./gateway/protocol.js";
@@ -142,10 +143,12 @@ class BridgeController implements vscode.Disposable {
     const executablePath = config.get<string>("claudeExecutable", "").trim() || undefined;
     const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     const dir = scope === "workspace" ? folder : undefined;
+    // New chats started from the phone run in the open workspace folder.
+    const defaultCwd = folder ?? homedir();
     this.gateway = new GatewayCore(
       [
-        new ClaudeReadOnlyAdapter({ dir, limit, allowTurns, permissionMode, executablePath }),
-        new CodexReadOnlyAdapter({ cwd: dir, limit, allowTurns }),
+        new ClaudeReadOnlyAdapter({ dir, limit, allowTurns, permissionMode, executablePath, defaultCwd }),
+        new CodexReadOnlyAdapter({ cwd: dir, limit, allowTurns, defaultCwd }),
       ],
       undefined,
       (message) => this.output.info(message),

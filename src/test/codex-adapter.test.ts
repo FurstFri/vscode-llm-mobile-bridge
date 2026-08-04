@@ -90,6 +90,33 @@ test("normalizes Codex turns without exposing thread metadata", async () => {
   ]);
 });
 
+test("startNewSession announces the created thread before its turn events", async () => {
+  const calls: Array<{ text: string; cwd?: string; model?: string }> = [];
+  const adapter = new CodexReadOnlyAdapter({
+    defaultCwd: "C:/work/project",
+    source: source({
+      runNewThread: async function* (text, options, cwd) {
+        calls.push({ text, cwd, model: options?.model });
+        yield { kind: "thread", threadId: "thr_new" };
+        yield {
+          kind: "notification",
+          notification: { method: "turn/completed", params: { turn: { id: "t1", status: "completed" } } },
+        };
+      },
+    }),
+  });
+
+  const events = [];
+  for await (const event of adapter.startNewSession("создай README", { model: "gpt-5.1-codex" })) events.push(event);
+
+  assert.deepEqual(calls, [{ text: "создай README", cwd: "C:/work/project", model: "gpt-5.1-codex" }]);
+  assert.equal(events[0]?.type, "session.new");
+  const announced = events[0]?.payload as { providerSessionId: string; project?: string };
+  assert.equal(announced.providerSessionId, "thr_new");
+  assert.equal(announced.project, "project");
+  assert.deepEqual(events[1], { type: "turn.status", payload: { status: "completed" } });
+});
+
 function source(overrides: Partial<CodexSessionSource> = {}): CodexSessionSource {
   return {
     listThreads: async () => ({ data: [thread] }),
@@ -99,6 +126,9 @@ function source(overrides: Partial<CodexSessionSource> = {}): CodexSessionSource
     },
     runTurn: async function* () {
       throw new Error("runTurn is not expected in this test");
+    },
+    runNewThread: async function* () {
+      throw new Error("runNewThread is not expected in this test");
     },
     ...overrides,
   };

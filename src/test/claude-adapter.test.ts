@@ -146,6 +146,77 @@ test("startTurn resumes the session with query and streams normalized events", a
   ]);
 });
 
+test("startTurn applies model and effort overrides", async () => {
+  const queries: Array<{ prompt: string; options?: Options }> = [];
+  const adapter = new ClaudeReadOnlyAdapter({
+    source: source({
+      runQuery: (params) => {
+        queries.push(params);
+        return streamOf([]);
+      },
+    }),
+  });
+
+  for await (const _event of adapter.startTurn(sessionInfo.sessionId, "hi", { model: "opus", effort: "high" })) {
+    void _event;
+  }
+
+  const options = queries[0]?.options as Record<string, unknown> | undefined;
+  assert.equal(options?.model, "opus");
+  assert.equal(options?.effort, "high");
+  assert.deepEqual(options?.thinking, { type: "adaptive" });
+});
+
+test("startTurn disables thinking when effort is off", async () => {
+  const queries: Array<{ prompt: string; options?: Options }> = [];
+  const adapter = new ClaudeReadOnlyAdapter({
+    source: source({
+      runQuery: (params) => {
+        queries.push(params);
+        return streamOf([]);
+      },
+    }),
+  });
+
+  for await (const _event of adapter.startTurn(sessionInfo.sessionId, "hi", { effort: "off" })) void _event;
+
+  const options = queries[0]?.options as Record<string, unknown> | undefined;
+  assert.deepEqual(options?.thinking, { type: "disabled" });
+  assert.equal(options?.effort, undefined);
+});
+
+test("startNewSession announces the session id from the first stream message", async () => {
+  const queries: Array<{ prompt: string; options?: Options }> = [];
+  const adapter = new ClaudeReadOnlyAdapter({
+    defaultCwd: "C:/work/project",
+    source: source({
+      runQuery: (params) => {
+        queries.push(params);
+        return streamOf([
+          {
+            type: "assistant",
+            uuid: "assistant-new",
+            session_id: "fresh-session",
+            message: { role: "assistant", content: [{ type: "text", text: "Начал." }] },
+          } as unknown as SDKMessage,
+        ]);
+      },
+    }),
+  });
+
+  const events = [];
+  for await (const event of adapter.startNewSession("сделай проект")) events.push(event);
+
+  assert.equal(queries[0]?.options?.resume, undefined);
+  assert.equal(queries[0]?.options?.cwd, "C:/work/project");
+  assert.equal(events[0]?.type, "session.new");
+  const announced = events[0]?.payload as { providerSessionId: string; project?: string; title?: string };
+  assert.equal(announced.providerSessionId, "fresh-session");
+  assert.equal(announced.project, "project");
+  assert.equal(announced.title, "сделай проект");
+  assert.equal(events[1]?.type, "item.complete");
+});
+
 test("startTurn is rejected when sending is disabled", async () => {
   const adapter = new ClaudeReadOnlyAdapter({ allowTurns: false, source: source() });
   const sessions = await adapter.listSessions();

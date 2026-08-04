@@ -24,6 +24,7 @@ export interface ProviderSessionSnapshot {
 export type ProviderTurnEvent = {
   type: Extract<
     GatewayEventType,
+    | "session.new"
     | "turn.status"
     | "item.add"
     | "item.delta"
@@ -36,9 +37,26 @@ export type ProviderTurnEvent = {
   payload: unknown;
 };
 
+/** Per-turn overrides selected on the phone. */
+export interface TurnOptions {
+  model?: string;
+  effort?: string;
+}
+
+/** Payload of the adapter-emitted "session.new" event. */
+export interface NewSessionAnnouncement {
+  providerSessionId: string;
+  title?: string;
+  project?: string;
+  updatedAt?: number;
+}
+
 export interface ProviderAdapter {
   readonly provider: Provider;
   listSessions(): Promise<readonly ProviderSessionSummary[]>;
   readSnapshot(providerSessionId: string): Promise<ProviderSessionSnapshot>;
-  startTurn(providerSessionId: string, text: string): AsyncIterable<ProviderTurnEvent>;
+  startTurn(providerSessionId: string, text: string, options?: TurnOptions): AsyncIterable<ProviderTurnEvent>;
+  /** Creates a fresh provider session and runs the first turn. The first
+   *  emitted event must be "session.new" with a NewSessionAnnouncement. */
+  startNewSession(text: string, options?: TurnOptions): AsyncIterable<ProviderTurnEvent>;
 }

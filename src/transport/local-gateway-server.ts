@@ -89,12 +89,16 @@ export class LocalGatewayServer {
         const event = await this.gateway.listSessions(request.id);
         this.send(socket, { protocolVersion: 1, id: request.id, ok: true, type: "event", event });
       } else if (request.type === "turn.start") {
-        let owner = this.owners.get(socket);
-        if (!owner) {
-          owner = `mobile-${randomUUID()}`;
-          this.owners.set(socket, owner);
+        const owner = this.ownerFor(socket);
+        const options = { model: request.model, effort: request.effort };
+        for await (const event of this.gateway.startTurn(request.sessionRef, owner, request.text, request.id, options)) {
+          this.send(socket, { protocolVersion: 1, id: request.id, ok: true, type: "event", event });
         }
-        for await (const event of this.gateway.startTurn(request.sessionRef, owner, request.text, request.id)) {
+        this.send(socket, { protocolVersion: 1, id: request.id, ok: true, type: "turn.end" });
+      } else if (request.type === "session.new") {
+        const owner = this.ownerFor(socket);
+        const options = { model: request.model, effort: request.effort };
+        for await (const event of this.gateway.startNewSession(request.provider, owner, request.text, request.id, options)) {
           this.send(socket, { protocolVersion: 1, id: request.id, ok: true, type: "event", event });
         }
         this.send(socket, { protocolVersion: 1, id: request.id, ok: true, type: "turn.end" });
@@ -105,6 +109,15 @@ export class LocalGatewayServer {
     } catch {
       this.sendError(socket, request.id, "INTERNAL_ERROR", "The gateway could not complete this request.");
     }
+  }
+
+  private ownerFor(socket: WebSocket): string {
+    let owner = this.owners.get(socket);
+    if (!owner) {
+      owner = `mobile-${randomUUID()}`;
+      this.owners.set(socket, owner);
+    }
+    return owner;
   }
 
   private sendError(
@@ -129,6 +142,13 @@ function parseRequest(raw: string): MobileRequest | undefined {
     if (value.type === "ping" || value.type === "session.list") return value as MobileRequest;
     if (value.type === "session.snapshot" && typeof value.sessionRef === "string") return value as MobileRequest;
     if (value.type === "turn.start" && typeof value.sessionRef === "string" && typeof value.text === "string") {
+      return value as MobileRequest;
+    }
+    if (
+      value.type === "session.new"
+      && (value.provider === "claude" || value.provider === "codex")
+      && typeof value.text === "string"
+    ) {
       return value as MobileRequest;
     }
     return undefined;
