@@ -53,6 +53,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.delay
 
 /** VS Code Dark Modern palette with the Claude/Codex accents. */
 private object Vs {
@@ -161,6 +162,13 @@ private fun PairingScreen(state: BridgeUiState, model: BridgeViewModel, padding:
 
 @Composable
 private fun SessionsScreen(state: BridgeUiState, model: BridgeViewModel, padding: PaddingValues) {
+    // Keep the list fresh while the screen is open.
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(15_000)
+            model.refresh()
+        }
+    }
     Column(Modifier.fillMaxSize().padding(padding)) {
         PanelHeader(
             title = "Чаты",
@@ -242,15 +250,27 @@ private fun TimelineScreen(state: BridgeUiState, model: BridgeViewModel, padding
     val listState = rememberLazyListState()
     var firstLoad by remember { mutableStateOf(true) }
 
+    // Live updates: the gateway is pull-based, so poll the open chat's
+    // snapshot — turns driven from VS Code appear on the phone too.
+    LaunchedEffect(session.ref) {
+        while (true) {
+            delay(5_000)
+            model.refreshTimeline()
+        }
+    }
+
     // Open at the newest message: jump instantly on the first snapshot,
-    // scroll smoothly for streamed updates afterwards.
+    // then follow new items only when the reader is already near the bottom.
     LaunchedEffect(state.timeline.size) {
         if (state.timeline.isEmpty()) return@LaunchedEffect
         if (firstLoad) {
             listState.scrollToItem(state.timeline.lastIndex)
             firstLoad = false
         } else {
-            listState.animateScrollToItem(state.timeline.lastIndex)
+            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+            if (lastVisible >= state.timeline.lastIndex - 2) {
+                listState.animateScrollToItem(state.timeline.lastIndex)
+            }
         }
     }
 

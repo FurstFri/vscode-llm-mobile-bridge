@@ -60,6 +60,13 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application),
         client.refreshSessions()
     }
 
+    /** Re-requests the open chat's snapshot; used by the UI poller. */
+    fun refreshTimeline() {
+        val current = state.value
+        if (current.connection != ConnectionState.CONNECTED) return
+        current.selectedSession?.let { client.requestSnapshot(it.ref) }
+    }
+
     fun updateComposer(value: String) {
         mutableState.update { it.copy(composerText = value) }
     }
@@ -98,6 +105,9 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application),
 
     override fun onSnapshot(session: BridgeSession, items: List<TimelineItem>) = onUi {
         mutableState.update { current ->
+            // While our own turn is in flight, keep the optimistic timeline —
+            // a background poll must not wipe the pending message.
+            if (current.sending && current.selectedSession?.ref == session.ref) return@update current
             current.copy(
                 selectedSession = session.takeIf { current.selectedSession?.ref == session.ref },
                 timeline = items,
