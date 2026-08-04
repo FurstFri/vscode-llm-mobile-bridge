@@ -65,4 +65,9 @@ export interface ProviderAdapter {
   /** Creates a fresh provider session and runs the first turn. The first
    *  emitted event must be "session.new" with a NewSessionAnnouncement. */
   startNewSession(text: string, options?: TurnOptions): AsyncIterable<ProviderTurnEvent>;
+  /**
+   * Answers a permission prompt this adapter forwarded to the phone.
+   * Returns false when the id is not (or no longer) pending.
+   */
+  resolveApproval?(id: string, allow: boolean, message?: string): boolean;
 }

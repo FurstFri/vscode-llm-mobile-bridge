@@ -88,6 +88,9 @@ export class LocalGatewayServer {
       } else if (request.type === "session.list") {
         const event = await this.gateway.listSessions(request.id);
         this.send(socket, { protocolVersion: 1, id: request.id, ok: true, type: "event", event });
+      } else if (request.type === "approval.respond") {
+        this.gateway.respondToApproval(request.approvalId, request.allow, request.message);
+        this.send(socket, { protocolVersion: 1, id: request.id, ok: true, type: "approval.ack" });
       } else if (request.type === "provider.status") {
         const event = await this.gateway.readProviderStatus(request.id);
         this.send(socket, { protocolVersion: 1, id: request.id, ok: true, type: "event", event });
@@ -154,6 +157,9 @@ function parseRequest(raw: string): MobileRequest | undefined {
       && (value.provider === "claude" || value.provider === "codex")
       && typeof value.text === "string"
     ) {
+      return value as MobileRequest;
+    }
+    if (value.type === "approval.respond" && typeof value.approvalId === "string" && typeof value.allow === "boolean") {
       return value as MobileRequest;
     }
     return undefined;

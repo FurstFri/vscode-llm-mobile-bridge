@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
@@ -9,11 +10,14 @@ import {
   type GetSessionInfoOptions,
   type GetSessionMessagesOptions,
   type ListSessionsOptions,
+  type CanUseTool,
   type Options,
+  type PermissionResult,
   type SDKMessage,
   type SDKSessionInfo,
   type SessionMessage,
 } from "@anthropic-ai/claude-agent-sdk";
+import { EventChannel } from "./event-channel.js";
 import type {
   ProviderAdapter,
   ProviderSessionSnapshot,
@@ -39,7 +43,12 @@ export interface ClaudeSessionSource {
   listModels(options?: Options): Promise<ClaudeModelInfo[]>;
 }
 
-export type ClaudePermissionMode = "default" | "acceptEdits" | "bypassPermissions";
+/**
+ * `askOnPhone` keeps the project's permission rules but forwards every
+ * prompt to the phone instead of deadlocking on a terminal that nobody
+ * is watching.
+ */
+export type ClaudePermissionMode = "askOnPhone" | "default" | "acceptEdits" | "bypassPermissions";
 
 export interface ClaudeReadOnlyAdapterOptions {
   dir?: string;
@@ -52,6 +61,9 @@ export interface ClaudeReadOnlyAdapterOptions {
   defaultCwd?: string;
   source?: ClaudeSessionSource;
 }
+
+/** A prompt nobody answers must not hold the turn open indefinitely. */
+const APPROVAL_TIMEOUT_MS = 5 * 60_000;
 
 const sdkSource: ClaudeSessionSource = {
   listSessions,
@@ -99,6 +111,7 @@ export class ClaudeReadOnlyAdapter implements ProviderAdapter {
   private models?: ProviderModel[];
   /** Claude reports usage as a stream event, so keep the newest one seen. */
   private limits?: ProviderLimits;
+  private readonly pendingApprovals = new Map<string, (allow: boolean, message?: string) => void>();
 
   constructor(options: ClaudeReadOnlyAdapterOptions = {}) {
     this.dir = options.dir;
@@ -167,48 +180,69 @@ export class ClaudeReadOnlyAdapter implements ProviderAdapter {
       providerSessionId,
       this.dir ? { dir: this.dir } : undefined,
     );
+    yield* this.runTurn({
+      resume: providerSessionId,
+      ...(info?.cwd ? { cwd: info.cwd } : {}),
+      ...this.baseQueryOptions(options),
+    }, text);
+  }
+
+  /** Runs a query, merging its stream with approval prompts it triggers. */
+  private async *runTurn(
+    queryOptions: Options,
+    text: string,
+    onMessage?: (message: SDKMessage) => ProviderTurnEvent[],
+  ): AsyncIterable<ProviderTurnEvent> {
+    const channel = new EventChannel<ProviderTurnEvent>();
     const stream = this.source.runQuery({
       prompt: text,
       options: {
-        resume: providerSessionId,
-        ...(info?.cwd ? { cwd: info.cwd } : {}),
-        ...this.baseQueryOptions(options),
+        ...queryOptions,
+        ...(this.permissionMode === "askOnPhone" ? { canUseTool: this.askPhone(channel) } : {}),
       },
     });
-    for await (const message of stream) {
-      this.captureRateLimit(message);
-      yield* mapClaudeStreamMessage(message);
-    }
+
+    void (async () => {
+      try {
+        for await (const message of stream) {
+          this.captureRateLimit(message);
+          for (const event of onMessage?.(message) ?? mapClaudeStreamMessage(message)) channel.push(event);
+        }
+        channel.close();
+      } catch (error) {
+        channel.fail(error);
+      }
+    })();
+
+    yield* channel;
   }
 
   async *startNewSession(text: string, options?: TurnOptions): AsyncIterable<ProviderTurnEvent> {
     if (!this.allowTurns) throw new Error("Sending messages to Claude sessions is disabled in settings.");
     const cwd = this.defaultCwd ?? this.dir;
-    const stream = this.source.runQuery({
-      prompt: text,
-      options: {
-        ...(cwd ? { cwd } : {}),
-        ...this.baseQueryOptions(options),
-      },
-    });
     let announced = false;
-    for await (const message of stream) {
-      this.captureRateLimit(message);
-      const record = message as unknown as Record<string, unknown>;
-      if (!announced && typeof record.session_id === "string" && record.session_id) {
-        announced = true;
-        yield {
-          type: "session.new",
-          payload: {
-            providerSessionId: record.session_id,
-            title: text.trim().slice(0, 60),
-            project: cwd ? projectName(cwd) : undefined,
-            updatedAt: Date.now(),
-          },
-        };
-      }
-      yield* mapClaudeStreamMessage(message);
-    }
+    yield* this.runTurn(
+      { ...(cwd ? { cwd } : {}), ...this.baseQueryOptions(options) },
+      text,
+      (message) => {
+        const record = message as unknown as Record<string, unknown>;
+        const events: ProviderTurnEvent[] = [];
+        if (!announced && typeof record.session_id === "string" && record.session_id) {
+          announced = true;
+          events.push({
+            type: "session.new",
+            payload: {
+              providerSessionId: record.session_id,
+              title: text.trim().slice(0, 60),
+              project: cwd ? projectName(cwd) : undefined,
+              updatedAt: Date.now(),
+            },
+          });
+        }
+        events.push(...mapClaudeStreamMessage(message));
+        return events;
+      },
+    );
   }
 
   private baseQueryOptions(turn?: TurnOptions): Partial<Options> {
@@ -222,12 +256,48 @@ export class ClaudeReadOnlyAdapter implements ProviderAdapter {
       extra.thinking = { type: "adaptive" };
     }
     return {
-      permissionMode: this.permissionMode,
+      // askOnPhone keeps the project's rules and routes prompts to the phone.
+      permissionMode: this.permissionMode === "askOnPhone" ? "default" : this.permissionMode,
       // The bundled extension has no node_modules, so the SDK cannot find
       // its optional native binary — point it at the installed CLI.
       ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
       ...(extra as Partial<Options>),
     };
+  }
+
+  /** Answers a pending approval; returns false when nothing was waiting. */
+  resolveApproval(id: string, allow: boolean, message?: string): boolean {
+    const pending = this.pendingApprovals.get(id);
+    if (!pending) return false;
+    this.pendingApprovals.delete(id);
+    pending(allow, message);
+    return true;
+  }
+
+  /**
+   * Bridges the SDK's permission prompt to the phone. Denies on timeout so a
+   * forgotten request cannot wedge the turn forever.
+   */
+  private askPhone(channel: EventChannel<ProviderTurnEvent>): CanUseTool {
+    return (toolName, input, options) => new Promise<PermissionResult>((resolve) => {
+      const id = randomUUID();
+      const settle = (allow: boolean, detail?: string) => {
+        clearTimeout(timer);
+        this.pendingApprovals.delete(id);
+        channel.push({ type: "approval.request", payload: { id, toolName, resolved: true, allow } });
+        resolve(allow
+          ? { behavior: "allow", updatedInput: input }
+          : { behavior: "deny", message: detail ?? "Отклонено с телефона" });
+      };
+      const timer = setTimeout(() => settle(false, "Нет ответа с телефона"), APPROVAL_TIMEOUT_MS);
+      timer.unref?.();
+      options.signal.addEventListener("abort", () => settle(false, "Ход прерван"), { once: true });
+      this.pendingApprovals.set(id, settle);
+      channel.push({
+        type: "approval.request",
+        payload: { id, toolName, summary: summarizeToolInput(toolName, input), resolved: false },
+      });
+    });
   }
 
   private captureRateLimit(message: SDKMessage): void {
@@ -427,6 +497,18 @@ function asObject(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
     : undefined;
+}
+
+/** One readable line describing what the tool is about to do. */
+export function summarizeToolInput(toolName: string, input: Record<string, unknown>): string {
+  for (const key of ["command", "file_path", "path", "pattern", "url", "prompt", "description"]) {
+    const value = input[key];
+    if (typeof value === "string" && value.trim()) {
+      const single = value.replace(/\s+/g, " ").trim();
+      return single.length > 200 ? `${single.slice(0, 200)}…` : single;
+    }
+  }
+  return toolName;
 }
 
 function windowMinutesFor(rateLimitType: unknown): number | undefined {

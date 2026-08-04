@@ -58,6 +58,15 @@ data class ProviderStatus(
     val limits: ProviderLimits? = null,
 )
 
+/** A tool the agent wants to run, waiting for a decision on the phone. */
+data class ApprovalRequest(
+    val id: String,
+    val toolName: String,
+    val summary: String? = null,
+    val resolved: Boolean = false,
+    val allowed: Boolean? = null,
+)
+
 data class TimelineItem(
     val id: String,
     val kind: String,
@@ -90,6 +99,8 @@ data class BridgeUiState(
     val newChatHostId: String? = null,
     val newChatProvider: String? = null,
     val timeline: List<TimelineItem> = emptyList(),
+    /** Permission prompts for the open chat, newest last. */
+    val approvals: List<ApprovalRequest> = emptyList(),
     val composerText: String = "",
     val turnModel: String = "",
     val turnEffort: String = "",

@@ -525,6 +525,14 @@ private fun TimelineScreen(state: BridgeUiState, model: BridgeViewModel, padding
                     onToggle = { expanded[item.id] = !(expanded[item.id] ?: false) },
                 )
             }
+            // Permission prompts sit at the end — they block the turn.
+            items(state.approvals, key = ApprovalRequest::id) { approval ->
+                ApprovalCard(
+                    approval = approval,
+                    accent = providerColor(provider),
+                    onDecide = { allow -> model.respondToApproval(approval.id, allow) },
+                )
+            }
         }
         if (session?.capabilities?.canStartTurn != false) {
             Composer(state, model)
@@ -547,6 +555,66 @@ private fun TimelineEntry(item: TimelineItem, expanded: Boolean, onToggle: () ->
         item.kind == "message" -> AssistantMessage(item)
         item.kind == "reasoning" -> ReasoningEntry(item, expanded, onToggle)
         else -> ToolEntry(item, expanded, onToggle)
+    }
+}
+
+/** Permission prompt forwarded from the machine, answered right here. */
+@Composable
+private fun ApprovalCard(approval: ApprovalRequest, accent: Color, onDecide: (Boolean) -> Unit) {
+    val decided = approval.resolved
+    val border = when {
+        !decided -> Vs.Warn
+        approval.allowed == true -> Vs.Ok
+        else -> Vs.Err
+    }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(Vs.Surface, RoundedCornerShape(8.dp))
+            .border(1.dp, border, RoundedCornerShape(8.dp))
+            .padding(12.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            StatusDot(border, 7.dp)
+            Spacer(Modifier.width(8.dp))
+            Text(
+                if (decided) "Запрос на действие" else "Требуется разрешение",
+                color = border,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f),
+            )
+            Text(approval.toolName, color = Vs.Dim, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+        }
+        approval.summary?.let {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                it,
+                color = Vs.Foreground,
+                fontSize = 12.sp,
+                lineHeight = 17.sp,
+                fontFamily = FontFamily.Monospace,
+            )
+        }
+        Spacer(Modifier.height(10.dp))
+        if (decided) {
+            Text(
+                if (approval.allowed == true) "Разрешено" else "Отклонено",
+                color = border,
+                fontSize = 12.sp,
+            )
+        } else {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = { onDecide(true) },
+                    shape = RoundedCornerShape(6.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = accent, contentColor = Color(0xFF1E1E1E)),
+                ) { Text("Разрешить", fontSize = 13.sp, fontWeight = FontWeight.SemiBold) }
+                OutlinedButton(onClick = { onDecide(false) }, shape = RoundedCornerShape(6.dp)) {
+                    Text("Отклонить", color = Vs.Dim, fontSize = 13.sp)
+                }
+            }
+        }
     }
 }
 

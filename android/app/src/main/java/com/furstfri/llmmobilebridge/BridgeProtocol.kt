@@ -24,6 +24,16 @@ object BridgeProtocol {
         return json.toString()
     }
 
+    /** Builds the answer to a forwarded permission prompt. */
+    fun approvalResponse(id: String, approvalId: String, allow: Boolean): String =
+        JSONObject()
+            .put("protocolVersion", 1)
+            .put("id", id)
+            .put("type", "approval.respond")
+            .put("approvalId", approvalId)
+            .put("allow", allow)
+            .toString()
+
     fun parseSessions(response: JSONObject): List<BridgeSession>? {
         val event = event(response, "session.list") ?: return null
         val values = event.getJSONObject("payload").getJSONArray("sessions")
@@ -72,6 +82,21 @@ object BridgeProtocol {
             text = item.optString("text"),
             status = item.optNullableString("status"),
             at = item.optLong("at", 0L).takeIf { it > 0L },
+        )
+    }
+
+    /** Parses a permission prompt forwarded from the machine. */
+    fun parseApproval(response: JSONObject): ApprovalRequest? {
+        val event = anyEvent(response) ?: return null
+        if (event.optString("type") != "approval.request") return null
+        val payload = event.optJSONObject("payload") ?: return null
+        val id = payload.optString("id").ifBlank { return null }
+        return ApprovalRequest(
+            id = id,
+            toolName = payload.optString("toolName", "инструмент"),
+            summary = payload.optNullableString("summary"),
+            resolved = payload.optBoolean("resolved"),
+            allowed = if (payload.has("allow")) payload.optBoolean("allow") else null,
         )
     }
 

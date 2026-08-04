@@ -257,6 +257,55 @@ test("startNewSession announces the session id from the first stream message", a
   assert.equal(events[1]?.type, "item.complete");
 });
 
+test("forwards a permission prompt to the phone and applies the answer", async () => {
+  let decide: ((result: unknown) => void) | undefined;
+  const adapter = new ClaudeReadOnlyAdapter({
+    permissionMode: "askOnPhone",
+    source: source({
+      runQuery: (params) => {
+        // The SDK asks while its stream is being consumed.
+        const canUseTool = (params.options as Record<string, unknown>).canUseTool as
+          (name: string, input: Record<string, unknown>, options: { signal: AbortSignal }) => Promise<unknown>;
+        const asked = canUseTool("Bash", { command: "rm -rf build" }, { signal: new AbortController().signal });
+        return (async function* () {
+          decide = (result) => void result;
+          const verdict = await asked;
+          yield {
+            type: "assistant",
+            uuid: "assistant-1",
+            session_id: sessionInfo.sessionId,
+            message: { role: "assistant", content: [{ type: "text", text: JSON.stringify(verdict) }] },
+          } as unknown as SDKMessage;
+        })();
+      },
+    }),
+  });
+
+  const events: Array<{ type: string; payload: unknown }> = [];
+  const iterator = adapter.startTurn(sessionInfo.sessionId, "почисти сборку")[Symbol.asyncIterator]();
+
+  const first = await iterator.next();
+  assert.equal(first.value?.type, "approval.request");
+  const asked = first.value?.payload as { id: string; toolName: string; summary: string; resolved: boolean };
+  assert.equal(asked.toolName, "Bash");
+  assert.equal(asked.summary, "rm -rf build");
+  assert.equal(asked.resolved, false);
+
+  assert.equal(adapter.resolveApproval(asked.id, true), true);
+  // A second answer for the same prompt is ignored.
+  assert.equal(adapter.resolveApproval(asked.id, true), false);
+
+  for (let next = await iterator.next(); !next.done; next = await iterator.next()) {
+    events.push(next.value as { type: string; payload: unknown });
+  }
+  void decide;
+
+  const resolved = events.find((event) => event.type === "approval.request");
+  assert.deepEqual(resolved?.payload, { id: asked.id, toolName: "Bash", resolved: true, allow: true });
+  const reply = events.find((event) => event.type === "item.complete");
+  assert.match(JSON.stringify(reply?.payload), /"behavior\\":\\"allow/);
+});
+
 test("startTurn is rejected when sending is disabled", async () => {
   const adapter = new ClaudeReadOnlyAdapter({ allowTurns: false, source: source() });
   const sessions = await adapter.listSessions();

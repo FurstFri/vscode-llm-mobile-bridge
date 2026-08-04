@@ -247,6 +247,9 @@ function asForwardableMobileRequest(value: Record<string, unknown>): Exclude<Mob
   ) {
     return value as Exclude<MobileRequest, { type: "auth" }>;
   }
+  if (value.type === "approval.respond" && typeof value.approvalId === "string" && typeof value.allow === "boolean") {
+    return value as Exclude<MobileRequest, { type: "auth" }>;
+  }
   return undefined;
 }
 

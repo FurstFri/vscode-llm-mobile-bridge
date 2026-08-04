@@ -20,6 +20,7 @@ class BridgeClient(private val listener: Listener) {
         fun onProviderStatus(hostId: String, statuses: List<ProviderStatus>)
         fun onSnapshot(hostId: String, session: BridgeSession, items: List<TimelineItem>)
         fun onSessionCreated(hostId: String, session: BridgeSession)
+        fun onApproval(hostId: String, approval: ApprovalRequest)
         fun onTurnItem(hostId: String, item: TimelineItem)
         fun onTurnState(hostId: String, state: String)
         fun onTurnEnd(hostId: String)
@@ -107,6 +108,10 @@ class BridgeClient(private val listener: Listener) {
         })
     }
 
+    fun sendApproval(hostId: String, approvalId: String, allow: Boolean) {
+        sockets[hostId]?.send(BridgeProtocol.approvalResponse(UUID.randomUUID().toString(), approvalId, allow))
+    }
+
     fun close(hostId: String) {
         sockets.remove(hostId)?.close(1000, "Mobile client disconnecting")
     }
@@ -143,6 +148,7 @@ class BridgeClient(private val listener: Listener) {
                 BridgeProtocol.parseSessionCreated(response)?.let {
                     listener.onSessionCreated(pairing.id, it.withHost(pairing))
                 }
+                BridgeProtocol.parseApproval(response)?.let { listener.onApproval(pairing.id, it) }
                 BridgeProtocol.parseTurnItem(response)?.let { listener.onTurnItem(pairing.id, it) }
                 BridgeProtocol.parseTurnState(response)?.let { listener.onTurnState(pairing.id, it) }
                 BridgeProtocol.parseEventError(response)?.let { listener.onError(pairing.id, it) }

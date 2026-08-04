@@ -95,6 +95,7 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application),
                 newChatHostId = null,
                 newChatProvider = null,
                 timeline = emptyList(),
+                approvals = emptyList(),
                 turnModel = "",
                 turnEffort = "",
                 error = null,
@@ -110,6 +111,7 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application),
                 newChatHostId = hostId,
                 newChatProvider = provider,
                 timeline = emptyList(),
+                approvals = emptyList(),
                 composerText = "",
                 turnModel = "",
                 turnEffort = "",
@@ -221,6 +223,31 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application),
                 current
             }
         }
+    }
+
+    override fun onApproval(hostId: String, approval: ApprovalRequest) = onUi {
+        mutableState.update { current ->
+            if (current.selectedSession?.hostId != hostId && current.newChatHostId != hostId) return@update current
+            val existing = current.approvals.indexOfFirst { it.id == approval.id }
+            val approvals = if (existing >= 0) {
+                current.approvals.toMutableList().also { it[existing] = approval }
+            } else {
+                current.approvals + approval
+            }
+            current.copy(approvals = approvals)
+        }
+    }
+
+    fun respondToApproval(id: String, allow: Boolean) {
+        val current = state.value
+        val hostId = current.selectedSession?.hostId ?: current.newChatHostId ?: return
+        // Show the decision immediately; the machine confirms it right after.
+        mutableState.update {
+            it.copy(approvals = it.approvals.map { approval ->
+                if (approval.id == id) approval.copy(resolved = true, allowed = allow) else approval
+            })
+        }
+        client.sendApproval(hostId, id, allow)
     }
 
     override fun onTurnItem(hostId: String, item: TimelineItem) = onUi {

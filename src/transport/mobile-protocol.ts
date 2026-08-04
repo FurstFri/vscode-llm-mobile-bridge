@@ -20,6 +20,14 @@ export type MobileRequest =
   | {
       protocolVersion: 1;
       id: string;
+      type: "approval.respond";
+      approvalId: string;
+      allow: boolean;
+      message?: string;
+    }
+  | {
+      protocolVersion: 1;
+      id: string;
       type: "session.new";
       provider: "claude" | "codex";
       text: string;
@@ -28,7 +36,7 @@ export type MobileRequest =
     };
 
 export type MobileResponse =
-  | { protocolVersion: 1; id: string; ok: true; type: "auth.ready" | "pong" | "turn.end" }
+  | { protocolVersion: 1; id: string; ok: true; type: "auth.ready" | "pong" | "turn.end" | "approval.ack" }
   | { protocolVersion: 1; id: string; ok: true; type: "event"; event: GatewayEvent }
   | {
       protocolVersion: 1;

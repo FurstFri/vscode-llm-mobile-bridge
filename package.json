@@ -2,7 +2,7 @@
   "name": "vscode-llm-mobile-bridge",
   "displayName": "LLM Mobile Bridge",
   "description": "A privacy-first mobile view of local Claude Code and Codex sessions.",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": true,
   "publisher": "furstfri",
   "repository": {
@@ -141,9 +141,15 @@
         },
         "llmMobileBridge.claudePermissionMode": {
           "type": "string",
-          "enum": ["default", "acceptEdits", "bypassPermissions"],
-          "default": "default",
-          "description": "Permission mode for Claude turns started from the phone. 'default' keeps project permission rules; tools without prior approval are denied."
+          "enum": ["askOnPhone", "default", "acceptEdits", "bypassPermissions"],
+          "enumDescriptions": [
+            "Ask on the phone: every prompt appears in the chat with Allow / Deny buttons (denied automatically after 5 minutes).",
+            "Project rules only: anything needing approval is denied, since nobody can answer on the machine.",
+            "Auto-accept file edits; commands still need approval and will be denied.",
+            "Allow everything, including shell commands, without asking."
+          ],
+          "default": "askOnPhone",
+          "description": "How Claude turns started from the phone handle permission prompts."
         }
       }
     }

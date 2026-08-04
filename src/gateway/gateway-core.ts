@@ -238,6 +238,18 @@ export class GatewayCore {
     }
   }
 
+  /** Routes a phone's decision to whichever adapter is waiting for it. */
+  respondToApproval(id: string, allow: boolean, message?: string): boolean {
+    for (const adapter of this.adapters.values()) {
+      if (adapter.resolveApproval?.(id, allow, message)) {
+        this.log?.(`Approval ${allow ? "granted" : "denied"} from the phone (${adapter.provider}).`);
+        return true;
+      }
+    }
+    this.log?.(`Approval ${id} is no longer pending.`);
+    return false;
+  }
+
   private gatewayEvent(type: GatewayEventType, payload: unknown, correlationId: string): GatewayEvent {
     this.gatewaySequence += 1;
     return {
