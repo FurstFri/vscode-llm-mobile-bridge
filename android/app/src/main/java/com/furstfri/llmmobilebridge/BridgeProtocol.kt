@@ -11,7 +11,8 @@ object BridgeProtocol {
         val token = json.getString("token")
         require(url.startsWith("ws://") || url.startsWith("wss://")) { "Pairing URL must use WebSocket" }
         require(token.length >= 32) { "Pairing token is invalid" }
-        return PairingPayload(url, token)
+        val name = json.optString("name").takeIf { it.isNotBlank() } ?: "Компьютер"
+        return PairingPayload(url = url, token = token, name = name)
     }
 
     fun request(id: String, type: String, fields: Map<String, String> = emptyMap()): String {

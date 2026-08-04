@@ -120,15 +120,15 @@ private fun BridgeScreen(state: BridgeUiState, model: BridgeViewModel) {
         onPauseOrDispose { }
     }
     // Background retry loop: while paired but disconnected, keep trying.
-    LaunchedEffect(state.connection, state.pairing) {
-        if (state.pairing != null && state.connection == ConnectionState.DISCONNECTED) {
+    LaunchedEffect(state.connections, state.pairings) {
+        if (state.pairings.isNotEmpty() && state.connectedCount < state.pairings.size) {
             delay(5_000)
             model.reconnectIfNeeded()
         }
     }
     Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
         when {
-            state.pairing == null -> PairingScreen(state, model, padding)
+            state.pairings.isEmpty() || state.addingHost -> PairingScreen(state, model, padding)
             state.selectedSession != null || state.newChatProvider != null ->
                 TimelineScreen(state, model, padding)
             else -> SessionsScreen(state, model, padding)
@@ -149,14 +149,40 @@ private fun PairingScreen(state: BridgeUiState, model: BridgeViewModel, padding:
         Row(verticalAlignment = Alignment.CenterVertically) {
             StatusDot(Vs.Claude, 10.dp)
             Spacer(Modifier.width(10.dp))
-            Text("LLM Bridge", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+            Text(
+                if (state.addingHost) "Добавить компьютер" else "LLM Bridge",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
         }
         Spacer(Modifier.height(8.dp))
         Text(
-            "В VS Code откройте панель LLM Bridge и выполните «Скопировать пейринг для телефона», затем вставьте JSON сюда.",
+            "В VS Code откройте панель LLM Bridge и выполните «Скопировать пейринг для телефона», затем вставьте JSON сюда."
+                + if (state.addingHost) " Так можно подключить и удалённый сервер, открытый через Remote-SSH." else "",
             color = Vs.Dim,
             fontSize = 13.sp,
         )
+        if (state.pairings.isNotEmpty()) {
+            Spacer(Modifier.height(14.dp))
+            state.pairings.forEach { pairing ->
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    StatusDot(connectionColor(state.connections[pairing.id] ?: ConnectionState.DISCONNECTED), 7.dp)
+                    Spacer(Modifier.width(8.dp))
+                    Text(pairing.name, color = Vs.Foreground, fontSize = 13.sp, modifier = Modifier.weight(1f))
+                    Text(
+                        "убрать",
+                        color = Vs.Faint,
+                        fontSize = 12.sp,
+                        modifier = Modifier
+                            .clickable { model.forgetHost(pairing.id) }
+                            .padding(horizontal = 6.dp, vertical = 4.dp),
+                    )
+                }
+            }
+        }
         Spacer(Modifier.height(20.dp))
         OutlinedTextField(
             value = state.pairingText,
@@ -170,13 +196,20 @@ private fun PairingScreen(state: BridgeUiState, model: BridgeViewModel, padding:
         )
         state.error?.let { ErrorText(it) }
         Spacer(Modifier.height(16.dp))
-        Button(
-            onClick = model::pair,
-            enabled = state.pairingText.isNotBlank(),
-            shape = RoundedCornerShape(4.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = Vs.Claude, contentColor = Color(0xFF1E1E1E)),
-        ) {
-            Text("Подключить", fontWeight = FontWeight.SemiBold)
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Button(
+                onClick = model::pair,
+                enabled = state.pairingText.isNotBlank(),
+                shape = RoundedCornerShape(4.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Vs.Claude, contentColor = Color(0xFF1E1E1E)),
+            ) {
+                Text("Подключить", fontWeight = FontWeight.SemiBold)
+            }
+            if (state.addingHost) {
+                OutlinedButton(onClick = model::cancelAddHost, shape = RoundedCornerShape(4.dp)) {
+                    Text("Отмена", color = Vs.Dim)
+                }
+            }
         }
     }
 }
@@ -204,8 +237,12 @@ private fun SessionsScreen(state: BridgeUiState, model: BridgeViewModel, padding
     Column(Modifier.fillMaxSize().padding(padding)) {
         PanelHeader(
             title = "LLM Bridge",
-            subtitle = connectionLabel(state.connection),
-            statusColor = connectionColor(state.connection),
+            subtitle = if (state.pairings.size > 1) {
+                "${connectionLabel(state.overallConnection)} · ${state.connectedCount} из ${state.pairings.size}"
+            } else {
+                connectionLabel(state.overallConnection)
+            },
+            statusColor = connectionColor(state.overallConnection),
             action = "Обновить" to model::refresh,
         )
         // Top tab strip, VS Code panel style; swipe or tap to switch provider.
@@ -237,14 +274,20 @@ private fun SessionsScreen(state: BridgeUiState, model: BridgeViewModel, padding
             }
         }
         state.error?.let { ErrorText(it, Modifier.padding(horizontal = 16.dp)) }
-        if (state.connection == ConnectionState.DISCONNECTED) {
-            Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(
+            Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (state.connectedCount < state.pairings.size) {
                 Button(
                     onClick = model::reconnect,
                     shape = RoundedCornerShape(4.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = Vs.Claude, contentColor = Color(0xFF1E1E1E)),
                 ) { Text("Переподключить") }
-                OutlinedButton(onClick = model::unpair, shape = RoundedCornerShape(4.dp)) { Text("Забыть связь", color = Vs.Dim) }
+            }
+            OutlinedButton(onClick = model::beginAddHost, shape = RoundedCornerShape(4.dp)) {
+                Text("+ Компьютер", color = Vs.Dim, fontSize = 13.sp)
             }
         }
         HorizontalPager(
@@ -252,17 +295,25 @@ private fun SessionsScreen(state: BridgeUiState, model: BridgeViewModel, padding
             modifier = Modifier.weight(1f).fillMaxWidth(),
         ) { page ->
             val (label, provider, accent) = ProviderPages[page]
-            val sessions = state.sessions.filter { it.provider == provider }
+            val sessions = state.sessions
+                .filter { it.provider == provider }
+                .sortedByDescending { it.updatedAt ?: 0L }
+            val showHostNames = state.pairings.size > 1
             LazyColumn(Modifier.fillMaxSize()) {
-                item {
-                    NewChatRow(accent) { model.startNewChat(provider) }
+                // One "new chat" entry per machine, so the target is unambiguous.
+                items(state.pairings, key = { "new/${it.id}" }) { pairing ->
+                    NewChatRow(
+                        accent = accent,
+                        hostName = if (showHostNames) pairing.name else null,
+                        enabled = state.connections[pairing.id] == ConnectionState.CONNECTED,
+                    ) { model.startNewChat(pairing.id, provider) }
                     HorizontalDivider(color = Vs.Surface, thickness = 1.dp)
                 }
-                items(sessions, key = BridgeSession::ref) { session ->
-                    SessionRow(session) { model.select(session) }
+                items(sessions, key = BridgeSession::key) { session ->
+                    SessionRow(session, showHostNames) { model.select(session) }
                     HorizontalDivider(color = Vs.Surface, thickness = 1.dp)
                 }
-                if (sessions.isEmpty() && state.connection == ConnectionState.CONNECTED) {
+                if (sessions.isEmpty() && state.overallConnection == ConnectionState.CONNECTED) {
                     item {
                         Text(
                             "Сессий $label нет — начните новый чат сверху.",
@@ -278,27 +329,36 @@ private fun SessionsScreen(state: BridgeUiState, model: BridgeViewModel, padding
 }
 
 @Composable
-private fun NewChatRow(accent: Color, onClick: () -> Unit) {
+private fun NewChatRow(accent: Color, hostName: String?, enabled: Boolean, onClick: () -> Unit) {
+    val color = if (enabled) accent else Vs.Faint
     Row(
         Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
-            Modifier.size(18.dp).border(1.dp, accent, RoundedCornerShape(5.dp)),
+            Modifier.size(18.dp).border(1.dp, color, RoundedCornerShape(5.dp)),
             contentAlignment = Alignment.Center,
         ) {
-            Text("+", color = accent, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            Text("+", color = color, fontSize = 13.sp, fontWeight = FontWeight.Bold)
         }
         Spacer(Modifier.width(10.dp))
-        Text("Новый чат", color = accent, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+        Text("Новый чат", color = color, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+        if (hostName != null) {
+            Spacer(Modifier.width(6.dp))
+            Text("на $hostName", color = Vs.Faint, fontSize = 12.sp, maxLines = 1)
+        }
+        if (!enabled) {
+            Spacer(Modifier.weight(1f))
+            Text("нет связи", color = Vs.Faint, fontSize = 11.sp)
+        }
     }
 }
 
 @Composable
-private fun SessionRow(session: BridgeSession, onClick: () -> Unit) {
+private fun SessionRow(session: BridgeSession, showHostName: Boolean, onClick: () -> Unit) {
     Column(
         Modifier
             .fillMaxWidth()
@@ -321,6 +381,7 @@ private fun SessionRow(session: BridgeSession, onClick: () -> Unit) {
         }
         Spacer(Modifier.height(3.dp))
         val meta = listOfNotNull(
+            if (showHostName) session.hostName.takeIf(String::isNotBlank) else null,
             providerLabel(session.provider),
             session.project,
             formatWhen(session.updatedAt),
@@ -371,10 +432,13 @@ private fun TimelineScreen(state: BridgeUiState, model: BridgeViewModel, padding
         session?.updatedAt ?: 0L,
         state.timeline.maxOfOrNull { it.at ?: 0L } ?: 0L,
     ).takeIf { it > 0L }
+    val hostName = session?.hostName?.takeIf(String::isNotBlank)
+        ?: state.pairings.firstOrNull { it.id == state.newChatHostId }?.name
     Column(Modifier.fillMaxSize().padding(padding)) {
         PanelHeader(
             title = session?.title ?: "Новый чат",
             subtitle = listOfNotNull(
+                hostName?.takeIf { state.pairings.size > 1 },
                 providerLabel(provider),
                 session?.project,
                 session?.state ?: if (state.sending) "создаётся…" else "не начат",
@@ -393,7 +457,9 @@ private fun TimelineScreen(state: BridgeUiState, model: BridgeViewModel, padding
             if (session == null && state.timeline.isEmpty()) {
                 item {
                     Text(
-                        "Новый чат ${providerLabel(provider)}. Напишите первое сообщение — сессия будет создана в рабочей папке VS Code.",
+                        "Новый чат ${providerLabel(provider)}"
+                            + (hostName?.let { " на $it" } ?: "")
+                            + ". Напишите первое сообщение — сессия будет создана в рабочей папке VS Code.",
                         color = Vs.Dim,
                         fontSize = 13.sp,
                         lineHeight = 18.sp,

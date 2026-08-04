@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import * as vscode from "vscode";
 import { GatewayCore } from "./gateway/gateway-core.js";
 import type { SessionDescriptor, TimelineItem } from "./gateway/protocol.js";
@@ -125,7 +125,9 @@ class BridgeController implements vscode.Disposable {
     const configuredUrl = config.get<string>("mobileUrl", `ws://10.0.2.2:${this.activePort}`);
     // With a relay configured, the phone connects to the relay domain as-is.
     const url = relayUrl || buildMobileUrl(configuredUrl, this.activePort);
-    await vscode.env.clipboard.writeText(JSON.stringify({ protocolVersion: 1, url, token }));
+    // The name lets the phone tell several paired machines apart.
+    const name = config.get<string>("hostName", "").trim() || hostname();
+    await vscode.env.clipboard.writeText(JSON.stringify({ protocolVersion: 1, url, token, name }));
     await vscode.window.showInformationMessage("LLM Mobile Bridge pairing payload copied to the clipboard.");
   }
 

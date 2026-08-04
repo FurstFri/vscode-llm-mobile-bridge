@@ -16,9 +16,10 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application),
     val state: StateFlow<BridgeUiState> = mutableState.asStateFlow()
 
     init {
-        store.load()?.let { pairing ->
-            mutableState.update { it.copy(pairing = pairing) }
-            client.connect(pairing)
+        val pairings = store.load()
+        if (pairings.isNotEmpty()) {
+            mutableState.update { it.copy(pairings = pairings) }
+            client.connectAll(pairings)
         }
     }
 
@@ -26,31 +27,62 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application),
         mutableState.update { it.copy(pairingText = value, error = null) }
     }
 
+    /** Opens the pairing screen to add one more machine. */
+    fun beginAddHost() {
+        mutableState.update { it.copy(addingHost = true, pairingText = "", error = null) }
+    }
+
+    fun cancelAddHost() {
+        mutableState.update { it.copy(addingHost = false, pairingText = "", error = null) }
+    }
+
     fun pair() {
         val pairing = runCatching { BridgeProtocol.parsePairing(state.value.pairingText) }
             .getOrElse {
-                mutableState.update { current -> current.copy(error = it.message ?: "Pairing payload is invalid") }
+                mutableState.update { current -> current.copy(error = it.message ?: "Пейринг некорректен") }
                 return
             }
-        store.save(pairing)
-        mutableState.update { it.copy(pairing = pairing, pairingText = "", error = null) }
-        client.connect(pairing)
+        // Re-pairing the same machine replaces its entry instead of duplicating it.
+        val existing = state.value.pairings.firstOrNull { it.url == pairing.url && it.token == pairing.token }
+        val stored = if (existing != null) pairing.copy(id = existing.id) else pairing
+        val pairings = state.value.pairings.filterNot { it.id == stored.id } + stored
+        store.save(pairings)
+        mutableState.update {
+            it.copy(pairings = pairings, pairingText = "", addingHost = false, error = null)
+        }
+        client.connect(stored)
     }
 
     fun reconnect() {
-        state.value.pairing?.let(client::connect)
+        client.connectAll(state.value.pairings)
     }
 
-    /** Reconnects after screen wake or network loss; no-op when already connected. */
+    /** Reconnects machines that dropped; used on screen wake and retries. */
     fun reconnectIfNeeded() {
         val current = state.value
-        if (current.pairing != null && current.connection == ConnectionState.DISCONNECTED) {
-            client.connect(current.pairing)
+        current.pairings
+            .filter { current.connections[it.id] != ConnectionState.CONNECTED }
+            .forEach(client::connect)
+    }
+
+    /** Removes one machine; keeps the others paired. */
+    fun forgetHost(hostId: String) {
+        client.close(hostId)
+        val pairings = state.value.pairings.filterNot { it.id == hostId }
+        if (pairings.isEmpty()) store.clear() else store.save(pairings)
+        mutableState.update { current ->
+            current.copy(
+                pairings = pairings,
+                connections = current.connections - hostId,
+                sessions = current.sessions.filterNot { it.hostId == hostId },
+                selectedSession = current.selectedSession?.takeIf { it.hostId != hostId },
+                timeline = if (current.selectedSession?.hostId == hostId) emptyList() else current.timeline,
+            )
         }
     }
 
     fun unpair() {
-        client.close()
+        client.closeAll()
         store.clear()
         mutableState.value = BridgeUiState()
     }
@@ -59,6 +91,7 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application),
         mutableState.update {
             it.copy(
                 selectedSession = session,
+                newChatHostId = null,
                 newChatProvider = null,
                 timeline = emptyList(),
                 turnModel = "",
@@ -66,13 +99,14 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application),
                 error = null,
             )
         }
-        client.requestSnapshot(session.ref)
+        client.requestSnapshot(session.hostId, session.ref)
     }
 
-    fun startNewChat(provider: String) {
+    fun startNewChat(hostId: String, provider: String) {
         mutableState.update {
             it.copy(
                 selectedSession = null,
+                newChatHostId = hostId,
                 newChatProvider = provider,
                 timeline = emptyList(),
                 composerText = "",
@@ -93,18 +127,21 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application),
     }
 
     fun closeTimeline() {
-        mutableState.update { it.copy(selectedSession = null, newChatProvider = null, timeline = emptyList()) }
+        mutableState.update {
+            it.copy(selectedSession = null, newChatHostId = null, newChatProvider = null, timeline = emptyList())
+        }
     }
 
     fun refresh() {
-        client.refreshSessions()
+        client.refreshAllSessions()
     }
 
     /** Re-requests the open chat's snapshot; used by the UI poller. */
     fun refreshTimeline() {
         val current = state.value
-        if (current.connection != ConnectionState.CONNECTED) return
-        current.selectedSession?.let { client.requestSnapshot(it.ref) }
+        val session = current.selectedSession ?: return
+        if (current.connections[session.hostId] != ConnectionState.CONNECTED) return
+        client.requestSnapshot(session.hostId, session.ref)
     }
 
     fun updateComposer(value: String) {
@@ -116,8 +153,7 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application),
         val text = current.composerText.trim()
         if (text.isEmpty() || current.sending) return
         val session = current.selectedSession
-        val newProvider = current.newChatProvider
-        if (session == null && newProvider == null) return
+        val hostId = session?.hostId ?: current.newChatHostId ?: return
         val optimistic = TimelineItem(
             id = "local-${System.currentTimeMillis()}",
             kind = "message",
@@ -135,45 +171,52 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application),
             )
         }
         if (session != null) {
-            client.sendTurn(session.ref, text, current.turnModel, current.turnEffort)
-        } else if (newProvider != null) {
-            client.sendNewChat(newProvider, text, current.turnModel, current.turnEffort)
+            client.sendTurn(hostId, session.ref, text, current.turnModel, current.turnEffort)
+        } else {
+            val provider = current.newChatProvider ?: return
+            client.sendNewChat(hostId, provider, text, current.turnModel, current.turnEffort)
         }
     }
 
-    override fun onConnectionChanged(state: ConnectionState) = onUi {
-        mutableState.update { it.copy(connection = state) }
+    override fun onConnectionChanged(hostId: String, state: ConnectionState) = onUi {
+        mutableState.update { it.copy(connections = it.connections + (hostId to state)) }
     }
 
-    override fun onSessions(sessions: List<BridgeSession>) = onUi {
-        mutableState.update { it.copy(sessions = sessions, error = null) }
-    }
-
-    override fun onSnapshot(session: BridgeSession, items: List<TimelineItem>) = onUi {
+    override fun onSessions(hostId: String, sessions: List<BridgeSession>) = onUi {
         mutableState.update { current ->
-            // While our own turn is in flight, keep the optimistic timeline —
-            // a background poll must not wipe the pending message.
-            if (current.sending && current.selectedSession?.ref == session.ref) return@update current
-            current.copy(
-                selectedSession = session.takeIf { current.selectedSession?.ref == session.ref },
-                timeline = items,
-                error = null,
-            )
+            // Replace only this machine's slice; other machines keep theirs.
+            current.copy(sessions = current.sessions.filterNot { it.hostId == hostId } + sessions, error = null)
         }
     }
 
-    override fun onSessionCreated(session: BridgeSession) = onUi {
+    override fun onSnapshot(hostId: String, session: BridgeSession, items: List<TimelineItem>) = onUi {
         mutableState.update { current ->
-            if (current.newChatProvider == session.provider) {
-                current.copy(selectedSession = session, newChatProvider = null)
+            val open = current.selectedSession
+            if (open?.hostId != hostId || open.ref != session.ref) return@update current
+            // While our own turn is in flight, keep the optimistic timeline.
+            if (current.sending) return@update current
+            current.copy(selectedSession = session, timeline = items, error = null)
+        }
+    }
+
+    override fun onSessionCreated(hostId: String, session: BridgeSession) = onUi {
+        mutableState.update { current ->
+            if (current.newChatHostId == hostId && current.newChatProvider == session.provider) {
+                current.copy(
+                    selectedSession = session,
+                    newChatHostId = null,
+                    newChatProvider = null,
+                    sessions = current.sessions + session,
+                )
             } else {
                 current
             }
         }
     }
 
-    override fun onTurnItem(item: TimelineItem) = onUi {
+    override fun onTurnItem(hostId: String, item: TimelineItem) = onUi {
         mutableState.update { current ->
+            if (current.selectedSession?.hostId != hostId && current.newChatHostId != hostId) return@update current
             val existing = current.timeline.indexOfFirst { it.id == item.id }
             val timeline = if (existing >= 0) {
                 current.timeline.toMutableList().also { it[existing] = item }
@@ -184,23 +227,29 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application),
         }
     }
 
-    override fun onTurnState(state: String) = onUi {
+    override fun onTurnState(hostId: String, state: String) = onUi {
         mutableState.update { current ->
-            current.copy(selectedSession = current.selectedSession?.copy(state = state))
+            val open = current.selectedSession ?: return@update current
+            if (open.hostId != hostId) return@update current
+            current.copy(selectedSession = open.copy(state = state))
         }
     }
 
-    override fun onTurnEnd() = onUi {
+    override fun onTurnEnd(hostId: String) = onUi {
         mutableState.update { it.copy(sending = false) }
-        state.value.selectedSession?.let { client.requestSnapshot(it.ref) }
+        val session = state.value.selectedSession
+        if (session != null && session.hostId == hostId) client.requestSnapshot(hostId, session.ref)
     }
 
-    override fun onError(message: String) = onUi {
-        mutableState.update { it.copy(error = message, sending = false) }
+    override fun onError(hostId: String, message: String) = onUi {
+        val name = state.value.pairings.firstOrNull { it.id == hostId }?.name
+        mutableState.update {
+            it.copy(error = if (name != null) "$name: $message" else message, sending = false)
+        }
     }
 
     override fun onCleared() {
-        client.close()
+        client.closeAll()
         super.onCleared()
     }
 

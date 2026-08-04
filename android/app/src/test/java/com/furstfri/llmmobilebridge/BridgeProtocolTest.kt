@@ -14,6 +14,16 @@ class BridgeProtocolTest {
             """{"protocolVersion":1,"url":"ws://10.0.2.2:8765","token":"12345678901234567890123456789012"}""",
         )
         assertEquals("ws://10.0.2.2:8765", pairing.url)
+        assertEquals("Компьютер", pairing.name)
+    }
+
+    @Test
+    fun parsesPairingHostName() {
+        val pairing = BridgeProtocol.parsePairing(
+            """{"protocolVersion":1,"url":"wss://bridge.example.com","token":"12345678901234567890123456789012","name":"prod-server"}""",
+        )
+        assertEquals("prod-server", pairing.name)
+        assertTrue(pairing.id.isNotBlank())
     }
 
     @Test
