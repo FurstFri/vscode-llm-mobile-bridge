@@ -1,3 +1,6 @@
+import { existsSync, readdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { delimiter, join } from "node:path";
 import {
   getSessionInfo,
   getSessionMessages,
@@ -33,6 +36,8 @@ export interface ClaudeReadOnlyAdapterOptions {
   limit?: number;
   allowTurns?: boolean;
   permissionMode?: ClaudePermissionMode;
+  /** Explicit path to the claude executable; auto-resolved when omitted. */
+  executablePath?: string;
   source?: ClaudeSessionSource;
 }
 
@@ -50,12 +55,15 @@ export class ClaudeReadOnlyAdapter implements ProviderAdapter {
   private readonly allowTurns: boolean;
   private readonly permissionMode: ClaudePermissionMode;
   private readonly source: ClaudeSessionSource;
+  private readonly configuredExecutable?: string;
+  private resolvedExecutable?: string | null;
 
   constructor(options: ClaudeReadOnlyAdapterOptions = {}) {
     this.dir = options.dir;
     this.limit = options.limit ?? 100;
     this.allowTurns = options.allowTurns ?? true;
     this.permissionMode = options.permissionMode ?? "default";
+    this.configuredExecutable = options.executablePath;
     this.source = options.source ?? sdkSource;
   }
 
@@ -97,18 +105,51 @@ export class ClaudeReadOnlyAdapter implements ProviderAdapter {
       providerSessionId,
       this.dir ? { dir: this.dir } : undefined,
     );
+    const executable = this.claudeExecutable();
     const stream = this.source.runQuery({
       prompt: text,
       options: {
         resume: providerSessionId,
         ...(info?.cwd ? { cwd: info.cwd } : {}),
         permissionMode: this.permissionMode,
+        // The bundled extension has no node_modules, so the SDK cannot find
+        // its optional native binary — point it at the installed CLI.
+        ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
       },
     });
     for await (const message of stream) {
       yield* mapClaudeStreamMessage(message);
     }
   }
+
+  private claudeExecutable(): string | undefined {
+    if (this.resolvedExecutable === undefined) {
+      this.resolvedExecutable = resolveClaudeExecutable(this.configuredExecutable) ?? null;
+    }
+    return this.resolvedExecutable ?? undefined;
+  }
+}
+
+export function resolveClaudeExecutable(configured?: string): string | undefined {
+  if (configured?.trim()) return configured.trim();
+  if (process.env.CLAUDE_BIN?.trim()) return process.env.CLAUDE_BIN.trim();
+  const names = process.platform === "win32" ? ["claude.exe"] : ["claude"];
+  const candidates: string[] = [];
+  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
+    if (dir) for (const name of names) candidates.push(join(dir, name));
+  }
+  const home = homedir();
+  for (const name of names) candidates.push(join(home, ".local", "bin", name));
+  const extensionRoot = join(home, ".vscode", "extensions");
+  if (existsSync(extensionRoot)) {
+    const bundled = readdirSync(extensionRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && entry.name.startsWith("anthropic.claude-code-"))
+      .map((entry) => join(extensionRoot, entry.name, "resources", "native-binary", names[0]))
+      .sort();
+    const latest = bundled.at(-1);
+    if (latest) candidates.push(latest);
+  }
+  return candidates.find(existsSync);
 }
 
 function* mapClaudeStreamMessage(message: SDKMessage): Generator<ProviderTurnEvent> {

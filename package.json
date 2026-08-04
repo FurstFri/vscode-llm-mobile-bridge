@@ -2,7 +2,7 @@
   "name": "vscode-llm-mobile-bridge",
   "displayName": "LLM Mobile Bridge",
   "description": "A privacy-first mobile view of local Claude Code and Codex sessions.",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "private": true,
   "publisher": "furstfri",
   "repository": {
@@ -123,6 +123,11 @@
           "type": "boolean",
           "default": true,
           "description": "Allow the mobile client to send new messages into existing Claude and Codex sessions."
+        },
+        "llmMobileBridge.claudeExecutable": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the claude executable used for phone-initiated turns. Leave empty to auto-detect (CLAUDE_BIN, PATH, ~/.local/bin, the Claude Code VS Code extension)."
         },
         "llmMobileBridge.claudePermissionMode": {
           "type": "string",

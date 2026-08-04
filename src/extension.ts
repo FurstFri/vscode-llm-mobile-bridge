@@ -139,11 +139,12 @@ class BridgeController implements vscode.Disposable {
     const limit = config.get<number>("sessionLimit", 100);
     const allowTurns = config.get<boolean>("allowSendingMessages", true);
     const permissionMode = config.get<ClaudePermissionMode>("claudePermissionMode", "default");
+    const executablePath = config.get<string>("claudeExecutable", "").trim() || undefined;
     const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     const dir = scope === "workspace" ? folder : undefined;
     this.gateway = new GatewayCore(
       [
-        new ClaudeReadOnlyAdapter({ dir, limit, allowTurns, permissionMode }),
+        new ClaudeReadOnlyAdapter({ dir, limit, allowTurns, permissionMode, executablePath }),
         new CodexReadOnlyAdapter({ cwd: dir, limit, allowTurns }),
       ],
       undefined,
