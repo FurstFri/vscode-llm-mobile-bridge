@@ -11,3 +11,7 @@ artifacts/
 android/.gradle/
 android/local.properties
 android/**/build/
+
+# Scratch probes
+*.tmp.mjs
+*.tmp.cjs
