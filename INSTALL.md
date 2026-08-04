@@ -219,11 +219,11 @@ code --install-extension "$env:USERPROFILE\Downloads\llm-mobile-bridge.vsix" --f
 code --list-extensions | Select-String "llm-mobile-bridge"
 ```
 
-Правильная строка одна: `furstfri.vscode-llm-mobile-bridge`.
-Всё остальное (например, `furstfri.vscode-llm-mobile-bridge`) — удалить:
+Строка должна быть одна — `furstfri.vscode-llm-mobile-bridge`. Если их
+несколько, удалить лишние по их идентификатору:
 
 ```powershell
-code --uninstall-extension furstfri.vscode-llm-mobile-bridge
+code --uninstall-extension <идентификатор-из-списка>
 ```
 
 Затем поставить VSIX заново и **перезагрузить окно**.
