@@ -81,7 +81,20 @@ export class GatewayCore {
     return this.gatewayEvent("provider.status", { providers }, correlationId) as GatewayEvent<{ providers: ProviderStatus[] }>;
   }
 
+  /**
+   * Re-populates the registry when the phone presents a reference this
+   * process has not seen yet — it survives gateway restarts, but the
+   * in-memory registry starts empty.
+   */
+  private async ensureKnown(ref: string): Promise<boolean> {
+    if (this.registry.get(ref)) return true;
+    this.log?.(`Reference ${ref} is unknown in this process; reloading sessions.`);
+    await this.listSessions();
+    return Boolean(this.registry.get(ref));
+  }
+
   async readSnapshot(ref: string, correlationId: string = randomUUID()): Promise<GatewayEvent<SessionSnapshot>> {
+    await this.ensureKnown(ref);
     const binding = this.registry.getBinding(ref);
     const adapter = this.requireAdapter(binding.provider);
     const providerSnapshot = await adapter.readSnapshot(binding.providerSessionId);
@@ -107,8 +120,18 @@ export class GatewayCore {
       return;
     }
 
+    if (!await this.ensureKnown(ref)) {
+      this.log?.(`Turn rejected: unknown session reference ${ref}.`);
+      yield this.gatewayEvent("error", {
+        code: "UNKNOWN_SESSION",
+        message: "Эта сессия больше не доступна — обновите список чатов.",
+      }, correlationId);
+      return;
+    }
+
     const session = this.registry.get(ref);
     if (!session?.capabilities.canStartTurn) {
+      this.log?.(`Turn rejected: session ${ref} is read-only.`);
       yield this.registry.createEvent(ref, "error", {
         code: "SESSION_READ_ONLY",
         message: "This session is read-only until provider resume compatibility is approved.",

@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { homedir, hostname } from "node:os";
 import * as vscode from "vscode";
 import { GatewayCore } from "./gateway/gateway-core.js";
+import { SessionRegistry } from "./gateway/session-registry.js";
 import type { SessionDescriptor, TimelineItem } from "./gateway/protocol.js";
 import { ClaudeReadOnlyAdapter, type ClaudePermissionMode } from "./providers/claude-adapter.js";
 import { CodexReadOnlyAdapter } from "./providers/codex-adapter.js";
@@ -9,6 +10,8 @@ import { LocalGatewayServer } from "./transport/local-gateway-server.js";
 import { RelayHostClient } from "./transport/relay-host-client.js";
 
 const SECRET_KEY = "llmMobileBridge.pairingToken";
+/** Keeps session references stable across gateway restarts. */
+const REF_SALT_KEY = "llmMobileBridge.sessionRefSalt";
 
 class BridgeController implements vscode.Disposable {
   private server?: LocalGatewayServer;
@@ -17,6 +20,9 @@ class BridgeController implements vscode.Disposable {
   private activePort?: number;
   private takeoverTimer?: NodeJS.Timeout;
   private healthTimer?: NodeJS.Timeout;
+  private refSalt?: string;
+  /** An explicit stop must not be undone by the health check. */
+  private stoppedByUser = false;
   private readonly status: vscode.StatusBarItem;
   readonly output: vscode.LogOutputChannel;
   private readonly changeEmitter = new vscode.EventEmitter<void>();
@@ -44,9 +50,11 @@ class BridgeController implements vscode.Disposable {
       await vscode.window.showWarningMessage("LLM Mobile Bridge starts only in a trusted workspace.");
       return;
     }
+    this.stoppedByUser = false;
     const config = vscode.workspace.getConfiguration("llmMobileBridge");
     const port = config.get<number>("port", 8765);
     const token = await this.getOrCreateToken();
+    this.refSalt ??= await this.getOrCreateSecret(REF_SALT_KEY);
     const gateway = this.ensureGateway(true);
     const server = new LocalGatewayServer({ gateway, token, port, host: "127.0.0.1" });
     try {
@@ -105,7 +113,7 @@ class BridgeController implements vscode.Disposable {
    */
   startHealthCheck(): void {
     const timer = setInterval(() => {
-      if (this.server || this.takeoverTimer) return;
+      if (this.server || this.takeoverTimer || this.stoppedByUser) return;
       const autoStart = vscode.workspace.getConfiguration("llmMobileBridge").get<boolean>("autoStart", true);
       if (autoStart && vscode.workspace.isTrusted) void this.start();
     }, 30_000);
@@ -119,7 +127,8 @@ class BridgeController implements vscode.Disposable {
     this.takeoverTimer = undefined;
   }
 
-  async stop(): Promise<void> {
+  async stop(explicit = false): Promise<void> {
+    if (explicit) this.stoppedByUser = true;
     this.clearTakeover();
     const server = this.server;
     this.server = undefined;
@@ -203,18 +212,22 @@ class BridgeController implements vscode.Disposable {
         new ClaudeReadOnlyAdapter({ dir, limit, allowTurns, permissionMode, executablePath, defaultCwd }),
         new CodexReadOnlyAdapter({ cwd: dir, limit, allowTurns, defaultCwd }),
       ],
-      undefined,
+      new SessionRegistry(this.refSalt),
       (message) => this.output.info(message),
     );
     return this.gateway;
   }
 
   private async getOrCreateToken(): Promise<string> {
-    const stored = await this.context.secrets.get(SECRET_KEY);
+    return this.getOrCreateSecret(SECRET_KEY);
+  }
+
+  private async getOrCreateSecret(key: string): Promise<string> {
+    const stored = await this.context.secrets.get(key);
     if (stored) return stored;
-    const token = createToken();
-    await this.context.secrets.store(SECRET_KEY, token);
-    return token;
+    const value = createToken();
+    await this.context.secrets.store(key, value);
+    return value;
   }
 
   private setStopped(): void {
@@ -335,7 +348,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     controller,
     vscode.window.registerTreeDataProvider("llmMobileBridge.panel", tree),
     vscode.commands.registerCommand("llmMobileBridge.start", () => controller.start()),
-    vscode.commands.registerCommand("llmMobileBridge.stop", () => controller.stop()),
+    vscode.commands.registerCommand("llmMobileBridge.stop", () => controller.stop(true)),
     vscode.commands.registerCommand("llmMobileBridge.copyPairing", () => controller.copyPairing()),
     vscode.commands.registerCommand("llmMobileBridge.disconnectAll", () => controller.disconnectAll()),
     vscode.commands.registerCommand("llmMobileBridge.refreshSessions", () => tree.refresh()),

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { GatewayCore } from "../gateway/gateway-core.js";
+import { SessionRegistry } from "../gateway/session-registry.js";
 import type {
   ProviderAdapter,
   ProviderSessionSnapshot,
@@ -251,6 +252,34 @@ test("forwards model and effort overrides to the provider", async () => {
     text: "continue",
     options: { model: "opus", effort: "high" },
   }]);
+});
+
+test("accepts a reference from a previous gateway process", async () => {
+  const adapter = new FakeAdapter();
+  // The phone learned this ref before a restart; the registry starts empty.
+  const previous = new GatewayCore([new FakeAdapter()], new SessionRegistry("shared-salt"));
+  const listed = await previous.listSessions();
+  const ref = listed.payload.sessions[0]?.ref;
+  assert.ok(ref);
+
+  const restarted = new GatewayCore([adapter], new SessionRegistry("shared-salt"));
+  const events = await collect(restarted.startTurn(ref, "android-device", "continue"));
+
+  assert.equal(events.some((event) => event.type === "turn.start"), true);
+  assert.deepEqual(adapter.receivedTurns, [{
+    providerSessionId: adapter.providerSessionId,
+    text: "continue",
+    options: undefined,
+  }]);
+});
+
+test("reports an unknown reference instead of claiming the session is read-only", async () => {
+  const gateway = new GatewayCore([new FakeAdapter()], new SessionRegistry("salt"));
+
+  const events = await collect(gateway.startTurn("never-issued-ref", "android-device", "hi"));
+
+  assert.equal(events.length, 1);
+  assert.equal((events[0]?.payload as { code: string }).code, "UNKNOWN_SESSION");
 });
 
 test("rejects a new session for an unconfigured provider", async () => {

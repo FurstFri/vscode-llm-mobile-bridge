@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import type { Provider } from "../model.js";
 import {
   GatewayEvent,
@@ -46,6 +46,22 @@ export class SessionRegistry {
   private readonly sessions = new Map<string, ManagedSession>();
   private readonly refsByProviderSession = new Map<string, string>();
 
+  /**
+   * @param refSalt Keyed-hash secret that makes references stable across
+   *   gateway restarts while still hiding provider ids. Without it a restart
+   *   invalidates every reference the phone holds.
+   */
+  constructor(private readonly refSalt?: string) {}
+
+  /** Deterministic public reference for a provider session. */
+  refFor(provider: Provider, providerSessionId: string): string {
+    if (!this.refSalt) return randomUUID();
+    return createHmac("sha256", this.refSalt)
+      .update(this.identity(provider, providerSessionId))
+      .digest("base64url")
+      .slice(0, 22);
+  }
+
   register(registration: SessionRegistration & { ref: string }): SessionDescriptor {
     if (this.sessions.has(registration.ref)) throw new Error(`Session already registered: ${registration.ref}`);
     const identity = this.identity(registration.provider, registration.providerSessionId);
@@ -84,7 +100,10 @@ export class SessionRegistry {
       existing.updatedAt = registration.updatedAt ?? existing.updatedAt;
       return this.snapshot(existing);
     }
-    return this.register({ ...registration, ref: randomUUID() });
+    return this.register({
+      ...registration,
+      ref: this.refFor(registration.provider, registration.providerSessionId),
+    });
   }
 
   list(): SessionDescriptor[] {

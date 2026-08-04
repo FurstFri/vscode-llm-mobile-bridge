@@ -60,6 +60,28 @@ test("returns to idle after release and reconciles fresh snapshots", () => {
   assert.equal(registry.get("mobile-session")?.state, "idle");
 });
 
+test("keeps references stable across gateway restarts", () => {
+  // A restart builds a fresh registry; the phone still holds the old ref.
+  const first = new SessionRegistry("machine-salt");
+  const second = new SessionRegistry("machine-salt");
+
+  const before = first.registerOrGet({ provider: "claude", providerSessionId: "private-session" });
+  const after = second.registerOrGet({ provider: "claude", providerSessionId: "private-session" });
+
+  assert.equal(after.ref, before.ref);
+  assert.equal(before.ref.includes("private-session"), false);
+});
+
+test("gives different machines different references for the same id", () => {
+  const one = new SessionRegistry("salt-one");
+  const two = new SessionRegistry("salt-two");
+
+  const a = one.registerOrGet({ provider: "codex", providerSessionId: "thr_1" });
+  const b = two.registerOrGet({ provider: "codex", providerSessionId: "thr_1" });
+
+  assert.notEqual(a.ref, b.ref);
+});
+
 test("uses one public reference for the same provider session", () => {
   const registry = new SessionRegistry();
   const first = registry.registerOrGet({ provider: "codex", providerSessionId: "private-thread" });
