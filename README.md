@@ -1,5 +1,9 @@
 # VS Code LLM Mobile Bridge
 
+> 📱 **Просто хотите поставить и пользоваться? → [Пошаговая инструкция по установке (INSTALL.md)](INSTALL.md)**
+>
+> Готовые сборки: [страница релизов](https://github.com/FurstFri/vscode-llm-mobile-bridge/releases/latest).
+
 This repository contains a runnable local MVP: a VS Code extension with a
 Windows session gateway and a Kotlin/Jetpack Compose Android client.  It lists
 existing Claude Code and Codex conversations from all local projects, shows
@@ -55,6 +59,8 @@ pairing token they present. Sessions, transcripts, and message sending all
 run on the PC.
 
 ## Install the local MVP
+
+> Step-by-step instructions in Russian: **[INSTALL.md](INSTALL.md)**.
 
 Build artifacts are created in `artifacts/`:
 
@@ -168,8 +174,9 @@ The provider-neutral gateway foundation now includes:
   protocol;
 - trusted-workspace lifecycle, `SecretStorage` pairing token rotation, status
   bar state, and disconnect-all commands in the VS Code extension;
-- a Compose Android client with Keystore-encrypted pairing storage,
-  `FLAG_SECURE`, session list, and transcript timeline.
+- a Compose Android client with Keystore-encrypted pairing storage, swipeable
+  provider tabs, transcript timeline, and composer. Screenshots and screen
+  recording are deliberately allowed (`FLAG_SECURE` is not set).
 
 Sending messages into existing sessions is now implemented end to end: the
 Android composer sends `turn.start`, the gateway claims a single-writer lease,
@@ -178,10 +185,13 @@ the Claude adapter resumes the session through the Agent SDK
 `turn/start` over the app-server protocol, streaming normalized events back to
 the phone.  Sending can be disabled with `llmMobileBridge.allowSendingMessages`
 (extension) or left disabled via `BRIDGE_ALLOW_TURNS` (Docker daemon, default
-off because provider data is mounted read-only there).  The next
-implementation slice is persistent opaque-reference storage and the production
-outbound WSS/E2EE relay.  The loopback MVP intentionally does not open a LAN
-listener.
+off because provider data is mounted read-only there).
+
+Since v0.4.0 the phone can also start new chats (`session.new`) and override
+the model and thinking effort per turn for both providers.  Reaching the PC
+from any network is covered by the relay above; the next implementation slice
+is persistent opaque-reference storage and end-to-end encryption over the
+relay hop.  The loopback gateway intentionally does not open a LAN listener.
 
 ## Explicit Codex write-path probe
 
