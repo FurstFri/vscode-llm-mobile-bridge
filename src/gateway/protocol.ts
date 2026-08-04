@@ -27,6 +27,8 @@ export interface TimelineItem {
   role?: "user" | "assistant";
   text?: string;
   status?: "pending" | "running" | "completed" | "failed";
+  /** Epoch milliseconds of the underlying provider event, when known. */
+  at?: number;
 }
 
 export interface SessionSnapshot {

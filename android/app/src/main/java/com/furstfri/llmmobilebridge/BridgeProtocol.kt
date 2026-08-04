@@ -45,6 +45,7 @@ object BridgeProtocol {
                     role = item.optNullableString("role"),
                     text = item.optString("text"),
                     status = item.optNullableString("status"),
+                    at = item.optLong("at", 0L).takeIf { it > 0L },
                 ))
             }
         }
@@ -69,6 +70,7 @@ object BridgeProtocol {
             role = item.optNullableString("role"),
             text = item.optString("text"),
             status = item.optNullableString("status"),
+            at = item.optLong("at", 0L).takeIf { it > 0L },
         )
     }
 

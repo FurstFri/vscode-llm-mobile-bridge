@@ -75,6 +75,7 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application),
             role = "user",
             text = text,
             status = "pending",
+            at = System.currentTimeMillis(),
         )
         mutableState.update {
             it.copy(

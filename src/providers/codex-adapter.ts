@@ -186,14 +186,16 @@ export function normalizeCodexItems(values: readonly unknown[]): TimelineItem[] 
     const item = asObject(values[index]);
     if (!item || typeof item.type !== "string") continue;
     const id = typeof item.id === "string" ? item.id : `codex-item-${index}`;
+    const at = extractItemTimestamp(item);
+    const stamp = at !== undefined ? { at } : {};
     if (item.type === "userMessage") {
-      items.push({ id, kind: "message", role: "user", text: extractText(item.content), status: "completed" });
+      items.push({ id, kind: "message", role: "user", text: extractText(item.content), status: "completed", ...stamp });
     } else if (item.type === "agentMessage") {
-      items.push({ id, kind: "message", role: "assistant", text: stringOrEmpty(item.text), status: "completed" });
+      items.push({ id, kind: "message", role: "assistant", text: stringOrEmpty(item.text), status: "completed", ...stamp });
     } else if (item.type === "reasoning") {
       const summary = extractText(item.summary);
       const content = extractText(item.content);
-      items.push({ id, kind: "reasoning", text: summary || content || "Reasoning", status: "completed" });
+      items.push({ id, kind: "reasoning", text: summary || content || "Reasoning", status: "completed", ...stamp });
     } else {
       const label = firstString(item, ["name", "tool", "command", "query", "review", "result"]) ?? humanize(item.type);
       const output = firstString(item, ["aggregatedOutput", "output"]);
@@ -202,10 +204,23 @@ export function normalizeCodexItems(values: readonly unknown[]): TimelineItem[] 
         kind: "tool",
         text: output ? `${label}\n${output}` : label,
         status: normalizeStatus(item.status),
+        ...stamp,
       });
     }
   }
   return items.filter((item) => item.text?.trim().length);
+}
+
+function extractItemTimestamp(item: Record<string, unknown>): number | undefined {
+  for (const key of ["completedAt", "updatedAt", "createdAt", "timestamp", "startedAt"]) {
+    const raw = item[key];
+    if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+    if (typeof raw === "string") {
+      const parsed = Date.parse(raw);
+      if (!Number.isNaN(parsed)) return parsed;
+    }
+  }
+  return undefined;
 }
 
 function resolveCodexExecutable(configured?: string): string {

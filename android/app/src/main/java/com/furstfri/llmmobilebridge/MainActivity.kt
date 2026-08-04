@@ -6,6 +6,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -18,39 +19,69 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 
+/** VS Code Dark Modern palette with the Claude/Codex accents. */
+private object Vs {
+    val Background = Color(0xFF1E1E1E)
+    val Panel = Color(0xFF181818)
+    val Surface = Color(0xFF252526)
+    val SurfaceRaised = Color(0xFF2D2D30)
+    val Border = Color(0xFF3C3C3C)
+    val Foreground = Color(0xFFCCCCCC)
+    val Dim = Color(0xFF9D9D9D)
+    val Faint = Color(0xFF6E6E6E)
+    val Claude = Color(0xFFD97757)
+    val Codex = Color(0xFF10A37F)
+    val Ok = Color(0xFF89D185)
+    val Warn = Color(0xFFCCA700)
+    val Err = Color(0xFFF48771)
+    val UserBlock = Color(0xFF2A2D2E)
+}
+
 private val BridgeColors = darkColorScheme(
-    primary = Color(0xFF70B7FF),
-    onPrimary = Color(0xFF001D36),
-    background = Color(0xFF09111F),
-    surface = Color(0xFF111D30),
-    surfaceVariant = Color(0xFF192A43),
-    onSurface = Color(0xFFEAF2FF),
-    onSurfaceVariant = Color(0xFFB8C8E0),
-    error = Color(0xFFFFB4AB),
+    primary = Vs.Claude,
+    onPrimary = Color(0xFF1E1E1E),
+    background = Vs.Background,
+    surface = Vs.Panel,
+    surfaceVariant = Vs.Surface,
+    onSurface = Vs.Foreground,
+    onSurfaceVariant = Vs.Dim,
+    outline = Vs.Border,
+    error = Vs.Err,
 )
 
 class MainActivity : ComponentActivity() {
@@ -79,17 +110,26 @@ private fun BridgeScreen(state: BridgeUiState, model: BridgeViewModel) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Pairing
+// ---------------------------------------------------------------------------
+
 @Composable
 private fun PairingScreen(state: BridgeUiState, model: BridgeViewModel, padding: PaddingValues) {
     Column(
         modifier = Modifier.fillMaxSize().padding(padding).padding(24.dp),
         verticalArrangement = Arrangement.Center,
     ) {
-        Text("LLM Mobile Bridge", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            StatusDot(Vs.Claude, 10.dp)
+            Spacer(Modifier.width(10.dp))
+            Text("LLM Bridge", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+        }
         Spacer(Modifier.height(8.dp))
         Text(
-            "В VS Code выполните “Copy Pairing Payload”, затем вставьте значение сюда.",
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            "В VS Code откройте панель LLM Bridge и выполните «Скопировать пейринг для телефона», затем вставьте JSON сюда.",
+            color = Vs.Dim,
+            fontSize = 13.sp,
         )
         Spacer(Modifier.height(20.dp))
         OutlinedTextField(
@@ -97,162 +137,422 @@ private fun PairingScreen(state: BridgeUiState, model: BridgeViewModel, padding:
             onValueChange = model::updatePairingText,
             modifier = Modifier.fillMaxWidth(),
             minLines = 4,
-            label = { Text("Pairing JSON") },
+            textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+            placeholder = { Text("{\"protocolVersion\":1,\"url\":\"wss://…\",\"token\":\"…\"}", color = Vs.Faint, fontSize = 12.sp, fontFamily = FontFamily.Monospace) },
+            colors = vsFieldColors(),
+            shape = RoundedCornerShape(6.dp),
         )
         state.error?.let { ErrorText(it) }
         Spacer(Modifier.height(16.dp))
-        Button(onClick = model::pair, enabled = state.pairingText.isNotBlank()) {
-            Text("Подключить")
+        Button(
+            onClick = model::pair,
+            enabled = state.pairingText.isNotBlank(),
+            shape = RoundedCornerShape(4.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Vs.Claude, contentColor = Color(0xFF1E1E1E)),
+        ) {
+            Text("Подключить", fontWeight = FontWeight.SemiBold)
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Sessions
+// ---------------------------------------------------------------------------
 
 @Composable
 private fun SessionsScreen(state: BridgeUiState, model: BridgeViewModel, padding: PaddingValues) {
     Column(Modifier.fillMaxSize().padding(padding)) {
-        Header(
-            title = "Сессии",
+        PanelHeader(
+            title = "Чаты",
             subtitle = connectionLabel(state.connection),
-            primaryAction = "Обновить" to model::refresh,
+            statusColor = connectionColor(state.connection),
+            action = "Обновить" to model::refresh,
         )
         state.error?.let { ErrorText(it, Modifier.padding(horizontal = 16.dp)) }
         if (state.connection == ConnectionState.DISCONNECTED) {
             Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Button(onClick = model::reconnect) { Text("Переподключить") }
-                OutlinedButton(onClick = model::unpair) { Text("Забыть связь") }
+                Button(
+                    onClick = model::reconnect,
+                    shape = RoundedCornerShape(4.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Vs.Claude, contentColor = Color(0xFF1E1E1E)),
+                ) { Text("Переподключить") }
+                OutlinedButton(onClick = model::unpair, shape = RoundedCornerShape(4.dp)) { Text("Забыть связь", color = Vs.Dim) }
             }
         }
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
+        LazyColumn(Modifier.fillMaxSize()) {
             items(state.sessions, key = BridgeSession::ref) { session ->
-                SessionCard(session) { model.select(session) }
+                SessionRow(session) { model.select(session) }
+                HorizontalDivider(color = Vs.Surface, thickness = 1.dp)
             }
             if (state.sessions.isEmpty() && state.connection == ConnectionState.CONNECTED) {
-                item { Text("Сессии не найдены. Нажмите «Обновить» или проверьте настройки шлюза.") }
+                item {
+                    Text(
+                        "Сессии не найдены. Нажмите «Обновить» или проверьте настройки шлюза.",
+                        modifier = Modifier.padding(16.dp),
+                        color = Vs.Dim,
+                        fontSize = 13.sp,
+                    )
+                }
             }
         }
     }
 }
+
+@Composable
+private fun SessionRow(session: BridgeSession, onClick: () -> Unit) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            StatusDot(providerColor(session.provider), 7.dp)
+            Spacer(Modifier.width(8.dp))
+            Text(
+                session.title,
+                fontSize = 14.sp,
+                color = Vs.Foreground,
+                maxLines = 1,
+                modifier = Modifier.weight(1f),
+            )
+            if (session.state == "busy") {
+                Text("работает…", color = Vs.Warn, fontSize = 11.sp)
+            }
+        }
+        Spacer(Modifier.height(3.dp))
+        val meta = listOfNotNull(
+            providerLabel(session.provider),
+            session.project,
+            formatWhen(session.updatedAt),
+            if (!session.capabilities.canStartTurn) "только чтение" else null,
+        )
+        Text(meta.joinToString("  ·  "), color = Vs.Faint, fontSize = 12.sp, maxLines = 1, modifier = Modifier.padding(start = 15.dp))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Timeline (chat)
+// ---------------------------------------------------------------------------
 
 @Composable
 private fun TimelineScreen(state: BridgeUiState, model: BridgeViewModel, padding: PaddingValues) {
     val session = state.selectedSession ?: return
+    val expanded = remember { mutableStateMapOf<String, Boolean>() }
+    val listState = rememberLazyListState()
+    var firstLoad by remember { mutableStateOf(true) }
+
+    // Open at the newest message: jump instantly on the first snapshot,
+    // scroll smoothly for streamed updates afterwards.
+    LaunchedEffect(state.timeline.size) {
+        if (state.timeline.isEmpty()) return@LaunchedEffect
+        if (firstLoad) {
+            listState.scrollToItem(state.timeline.lastIndex)
+            firstLoad = false
+        } else {
+            listState.animateScrollToItem(state.timeline.lastIndex)
+        }
+    }
+
+    val lastActivity = maxOf(
+        session.updatedAt ?: 0L,
+        state.timeline.maxOfOrNull { it.at ?: 0L } ?: 0L,
+    ).takeIf { it > 0L }
     Column(Modifier.fillMaxSize().padding(padding)) {
-        Header(
+        PanelHeader(
             title = session.title,
-            subtitle = "${session.provider} · ${session.state}",
-            primaryAction = "Назад" to model::closeTimeline,
+            subtitle = listOfNotNull(
+                providerLabel(session.provider),
+                session.project,
+                session.state,
+                lastActivity?.let { "обновлено ${formatWhen(it)}" },
+            ).joinToString(" · "),
+            statusColor = providerColor(session.provider),
+            action = "‹ Назад" to model::closeTimeline,
         )
         state.error?.let { ErrorText(it, Modifier.padding(horizontal = 16.dp)) }
         LazyColumn(
+            state = listState,
             modifier = Modifier.weight(1f).fillMaxWidth(),
-            contentPadding = PaddingValues(16.dp),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
-            reverseLayout = false,
         ) {
-            items(state.timeline, key = TimelineItem::id) { item -> TimelineCard(item) }
+            items(state.timeline, key = TimelineItem::id) { item ->
+                TimelineEntry(
+                    item = item,
+                    expanded = expanded[item.id] == true,
+                    onToggle = { expanded[item.id] = !(expanded[item.id] ?: false) },
+                )
+            }
         }
         if (session.capabilities.canStartTurn) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.surface)
-                    .padding(horizontal = 12.dp, vertical = 8.dp)
-                    .imePadding(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                OutlinedTextField(
-                    value = state.composerText,
-                    onValueChange = model::updateComposer,
-                    modifier = Modifier.weight(1f),
-                    placeholder = { Text(if (state.sending) "Ожидание ответа…" else "Сообщение…") },
-                    enabled = !state.sending,
-                    maxLines = 4,
-                )
-                Button(
-                    onClick = model::sendMessage,
-                    enabled = !state.sending && state.composerText.isNotBlank(),
-                ) {
-                    Text("➤")
-                }
-            }
+            Composer(state, model)
         } else {
+            HorizontalDivider(color = Vs.Border, thickness = 1.dp)
             Text(
                 "Только чтение: отправка отключена в настройках шлюза.",
-                modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant).padding(16.dp),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.fillMaxWidth().background(Vs.Panel).padding(14.dp),
+                color = Vs.Dim,
+                fontSize = 12.sp,
             )
         }
     }
 }
 
 @Composable
-private fun Header(title: String, subtitle: String, primaryAction: Pair<String, () -> Unit>) {
-    Row(
-        modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).padding(16.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        OutlinedButton(onClick = primaryAction.second) { Text(primaryAction.first) }
+private fun TimelineEntry(item: TimelineItem, expanded: Boolean, onToggle: () -> Unit) {
+    when {
+        item.kind == "message" && item.role == "user" -> UserMessage(item)
+        item.kind == "message" -> AssistantMessage(item)
+        item.kind == "reasoning" -> ReasoningEntry(item, expanded, onToggle)
+        else -> ToolEntry(item, expanded, onToggle)
     }
 }
 
+/** User message: bordered block, like the prompt blocks in the Claude Code panel. */
 @Composable
-private fun SessionCard(session: BridgeSession, onClick: () -> Unit) {
-    Card(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+private fun UserMessage(item: TimelineItem) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(Vs.UserBlock, RoundedCornerShape(6.dp))
+            .border(1.dp, Vs.Border, RoundedCornerShape(6.dp))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
     ) {
-        Column(Modifier.padding(16.dp)) {
-            Text(session.title, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.height(5.dp))
-            val meta = listOfNotNull(session.provider, session.project, formatWhen(session.updatedAt))
-            Text(meta.joinToString(" · "), color = MaterialTheme.colorScheme.onSurfaceVariant)
-            if (!session.capabilities.canStartTurn) {
-                Spacer(Modifier.height(5.dp))
-                Text("READ ONLY", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall)
+        Text(item.text.ifBlank { item.status ?: "" }, color = Vs.Foreground, fontSize = 14.sp, lineHeight = 20.sp)
+        item.at?.let {
+            Spacer(Modifier.height(4.dp))
+            Text(formatClock(it), color = Vs.Faint, fontSize = 10.sp, modifier = Modifier.align(Alignment.End))
+        }
+    }
+}
+
+/** Assistant message: plain flowing text with the coral bullet, no bubble. */
+@Composable
+private fun AssistantMessage(item: TimelineItem) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 2.dp)) {
+        Text("⏺", color = Vs.Claude, fontSize = 13.sp)
+        Spacer(Modifier.width(8.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                item.text.ifBlank { item.status ?: "" },
+                color = Vs.Foreground,
+                fontSize = 14.sp,
+                lineHeight = 20.sp,
+            )
+            item.at?.let {
+                Spacer(Modifier.height(2.dp))
+                Text(formatClock(it), color = Vs.Faint, fontSize = 10.sp)
             }
         }
     }
 }
 
+/** Reasoning: dimmed, collapsed by default. */
 @Composable
-private fun TimelineCard(item: TimelineItem) {
-    val background = when (item.role) {
-        "user" -> Color(0xFF173B5C)
-        "assistant" -> MaterialTheme.colorScheme.surface
-        else -> MaterialTheme.colorScheme.surfaceVariant
-    }
-    Card(
-        colors = CardDefaults.cardColors(containerColor = background),
-        shape = RoundedCornerShape(14.dp),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(Modifier.padding(14.dp)) {
+private fun ReasoningEntry(item: TimelineItem, expanded: Boolean, onToggle: () -> Unit) {
+    Column(Modifier.fillMaxWidth().clickable(onClick = onToggle).padding(horizontal = 2.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("✳", color = Vs.Faint, fontSize = 12.sp)
+            Spacer(Modifier.width(8.dp))
             Text(
-                (item.role ?: item.kind).uppercase(),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary,
+                "Размышления",
+                color = Vs.Faint,
+                fontSize = 12.sp,
+                fontStyle = FontStyle.Italic,
+                modifier = Modifier.weight(1f),
             )
-            Spacer(Modifier.height(5.dp))
+            Text(if (expanded) "▾" else "▸", color = Vs.Faint, fontSize = 12.sp)
+        }
+        if (expanded) {
             Text(
-                item.text.ifBlank { item.status ?: item.kind },
-                fontFamily = if (item.kind == "tool") FontFamily.Monospace else FontFamily.Default,
+                item.text,
+                color = Vs.Dim,
+                fontSize = 12.sp,
+                lineHeight = 17.sp,
+                fontStyle = FontStyle.Italic,
+                modifier = Modifier.padding(start = 18.dp, top = 4.dp),
             )
         }
     }
 }
+
+/** Tool call: compact status row, output expands under a left rule. */
+@Composable
+private fun ToolEntry(item: TimelineItem, expanded: Boolean, onToggle: () -> Unit) {
+    val label = item.text.lineSequence().firstOrNull().orEmpty().ifBlank { "tool" }
+    val output = item.text.substringAfter("\n", missingDelimiterValue = "").trim()
+    Column(Modifier.fillMaxWidth().clickable(enabled = output.isNotEmpty(), onClick = onToggle).padding(horizontal = 2.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            StatusDot(toolStatusColor(item.status), 7.dp)
+            Spacer(Modifier.width(8.dp))
+            Text(
+                label,
+                color = Vs.Dim,
+                fontSize = 13.sp,
+                fontFamily = FontFamily.Monospace,
+                maxLines = 1,
+                modifier = Modifier.weight(1f),
+            )
+            if (output.isNotEmpty()) Text(if (expanded) "▾" else "▸", color = Vs.Faint, fontSize = 12.sp)
+        }
+        if (expanded && output.isNotEmpty()) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = 15.dp, top = 6.dp)
+                    .background(Vs.Panel, RoundedCornerShape(4.dp))
+                    .border(1.dp, Vs.Surface, RoundedCornerShape(4.dp))
+                    .padding(10.dp),
+            ) {
+                Text(
+                    output,
+                    color = Vs.Dim,
+                    fontSize = 11.sp,
+                    lineHeight = 15.sp,
+                    fontFamily = FontFamily.Monospace,
+                )
+            }
+        }
+    }
+}
+
+/** VS Code-style chat composer: bordered rounded field + accent send button. */
+@Composable
+private fun Composer(state: BridgeUiState, model: BridgeViewModel) {
+    Column {
+        HorizontalDivider(color = Vs.Border, thickness = 1.dp)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Vs.Panel)
+                .padding(horizontal = 10.dp, vertical = 8.dp)
+                .imePadding(),
+            verticalAlignment = Alignment.Bottom,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedTextField(
+                value = state.composerText,
+                onValueChange = model::updateComposer,
+                modifier = Modifier.weight(1f),
+                placeholder = {
+                    Text(
+                        if (state.sending) "Агент отвечает…" else "Напишите сообщение агенту…",
+                        color = Vs.Faint,
+                        fontSize = 13.sp,
+                    )
+                },
+                enabled = !state.sending,
+                maxLines = 5,
+                textStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
+                colors = vsFieldColors(),
+                shape = RoundedCornerShape(6.dp),
+            )
+            val canSend = !state.sending && state.composerText.isNotBlank()
+            Box(
+                modifier = Modifier
+                    .padding(bottom = 6.dp)
+                    .size(34.dp)
+                    .background(if (canSend) Vs.Claude else Vs.SurfaceRaised, CircleShape)
+                    .clickable(enabled = canSend, onClick = model::sendMessage),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("↑", color = if (canSend) Color(0xFF1E1E1E) else Vs.Faint, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared pieces
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun PanelHeader(
+    title: String,
+    subtitle: String,
+    statusColor: Color,
+    action: Pair<String, () -> Unit>,
+) {
+    Column {
+        Row(
+            modifier = Modifier.fillMaxWidth().background(Vs.Panel).padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            StatusDot(statusColor, 8.dp)
+            Spacer(Modifier.width(9.dp))
+            Column(Modifier.weight(1f)) {
+                Text(title, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = Vs.Foreground, maxLines = 1)
+                Text(subtitle, color = Vs.Faint, fontSize = 11.sp, maxLines = 1)
+            }
+            Text(
+                action.first,
+                color = Vs.Claude,
+                fontSize = 13.sp,
+                modifier = Modifier
+                    .clickable(onClick = action.second)
+                    .padding(horizontal = 6.dp, vertical = 6.dp),
+            )
+        }
+        HorizontalDivider(color = Vs.Border, thickness = 1.dp)
+    }
+}
+
+@Composable
+private fun StatusDot(color: Color, size: androidx.compose.ui.unit.Dp) {
+    Box(Modifier.size(size).background(color, CircleShape))
+}
+
+@Composable
+private fun vsFieldColors() = OutlinedTextFieldDefaults.colors(
+    focusedBorderColor = Vs.Claude,
+    unfocusedBorderColor = Vs.Border,
+    disabledBorderColor = Vs.Surface,
+    focusedContainerColor = Vs.Surface,
+    unfocusedContainerColor = Vs.Surface,
+    disabledContainerColor = Vs.Panel,
+    cursorColor = Vs.Claude,
+    focusedTextColor = Vs.Foreground,
+    unfocusedTextColor = Vs.Foreground,
+)
 
 @Composable
 private fun ErrorText(message: String, modifier: Modifier = Modifier) {
-    Text(message, modifier = modifier.padding(top = 12.dp), color = MaterialTheme.colorScheme.error)
+    Text(message, modifier = modifier.padding(top = 12.dp), color = Vs.Err, fontSize = 12.sp)
+}
+
+private fun providerColor(provider: String): Color = when (provider) {
+    "claude" -> Vs.Claude
+    "codex" -> Vs.Codex
+    else -> Vs.Dim
+}
+
+private fun providerLabel(provider: String): String = when (provider) {
+    "claude" -> "Claude Code"
+    "codex" -> "Codex"
+    else -> provider
+}
+
+private fun connectionColor(state: ConnectionState): Color = when (state) {
+    ConnectionState.CONNECTED -> Vs.Ok
+    ConnectionState.CONNECTING, ConnectionState.AUTHENTICATING -> Vs.Warn
+    ConnectionState.DISCONNECTED -> Vs.Err
+}
+
+private fun toolStatusColor(status: String?): Color = when (status) {
+    "running", "pending" -> Vs.Warn
+    "failed" -> Vs.Err
+    else -> Vs.Ok
+}
+
+private fun formatClock(timestamp: Long): String {
+    val cal = java.util.Calendar.getInstance()
+    val now = java.util.Calendar.getInstance()
+    cal.timeInMillis = timestamp
+    val sameDay = cal.get(java.util.Calendar.YEAR) == now.get(java.util.Calendar.YEAR) &&
+        cal.get(java.util.Calendar.DAY_OF_YEAR) == now.get(java.util.Calendar.DAY_OF_YEAR)
+    val pattern = if (sameDay) "HH:mm" else "dd.MM HH:mm"
+    return java.text.SimpleDateFormat(pattern, java.util.Locale.getDefault()).format(java.util.Date(timestamp))
 }
 
 private fun formatWhen(timestamp: Long?): String? {

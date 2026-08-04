@@ -132,6 +132,9 @@ test("startTurn resumes the session with query and streams normalized events", a
   assert.equal(queries[0]?.prompt, "continue please");
   assert.equal(queries[0]?.options?.resume, sessionInfo.sessionId);
   assert.equal(queries[0]?.options?.cwd, sessionInfo.cwd);
+  const streamedItem = (events[0]?.payload as { item: Record<string, unknown> }).item;
+  assert.equal(typeof streamedItem.at, "number");
+  delete streamedItem.at;
   assert.deepEqual(events, [
     {
       type: "item.complete",

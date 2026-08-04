@@ -123,7 +123,9 @@ function* mapClaudeStreamMessage(message: SDKMessage): Generator<ProviderTurnEve
       parent_tool_use_id: null,
       parent_agent_id: null,
       message: record.message,
-    } as SessionMessage]);
+      // Live stream messages carry no transcript timestamp; stamp receive time.
+      timestamp: new Date().toISOString(),
+    } as unknown as SessionMessage]);
     for (const item of items) {
       yield { type: "item.complete", payload: { item } };
     }
@@ -147,6 +149,8 @@ export function normalizeClaudeMessages(messages: readonly SessionMessage[]): Ti
     const message = asObject(sessionMessage.message);
     const content = message?.content ?? sessionMessage.message;
     const blocks = Array.isArray(content) ? content : [content];
+    const at = extractTimestamp(sessionMessage);
+    const stamp = at !== undefined ? { at } : {};
     const textParts: string[] = [];
     let textBlockIndex = 0;
     const flushText = () => {
@@ -159,6 +163,7 @@ export function normalizeClaudeMessages(messages: readonly SessionMessage[]): Ti
         role: sessionMessage.type,
         text,
         status: "completed",
+        ...stamp,
       });
       textBlockIndex += 1;
     };
@@ -180,6 +185,7 @@ export function normalizeClaudeMessages(messages: readonly SessionMessage[]): Ti
           kind: "reasoning",
           text: record.thinking,
           status: "completed",
+          ...stamp,
         });
       } else if (record.type === "tool_use") {
         flushText();
@@ -189,6 +195,7 @@ export function normalizeClaudeMessages(messages: readonly SessionMessage[]): Ti
           kind: "tool",
           text: typeof record.name === "string" ? record.name : "tool",
           status: "running",
+          ...stamp,
         };
         tools.set(id, tool);
         items.push(tool);
@@ -207,6 +214,7 @@ export function normalizeClaudeMessages(messages: readonly SessionMessage[]): Ti
             kind: "tool",
             text: resultText || "tool result",
             status: record.is_error === true ? "failed" : "completed",
+            ...stamp,
           };
           tools.set(toolUseId, result);
           items.push(result);
@@ -217,6 +225,17 @@ export function normalizeClaudeMessages(messages: readonly SessionMessage[]): Ti
   }
 
   return items;
+}
+
+function extractTimestamp(sessionMessage: SessionMessage): number | undefined {
+  const record = sessionMessage as unknown as Record<string, unknown>;
+  const raw = record.timestamp;
+  if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+  if (typeof raw === "string") {
+    const parsed = Date.parse(raw);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  return undefined;
 }
 
 function extractText(value: unknown): string {

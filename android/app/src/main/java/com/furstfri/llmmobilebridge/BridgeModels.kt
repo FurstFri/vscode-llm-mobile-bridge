@@ -27,6 +27,7 @@ data class TimelineItem(
     val role: String?,
     val text: String,
     val status: String?,
+    val at: Long? = null,
 )
 
 enum class ConnectionState {
