@@ -24,7 +24,35 @@ Key settings (`llmMobileBridge.*`):
   (default true);
 - `claudePermissionMode` — permission mode for Claude turns started from the
   phone (`default` keeps project permission rules; tools without prior
-  approval are denied).
+  approval are denied);
+- `relayUrl` — optional wss:// relay for reaching the PC from anywhere (see
+  below).
+
+## Relay mode (server as a dumb pipe)
+
+When the phone cannot reach the PC directly, run the relay container on any
+server behind a TLS reverse proxy:
+
+```yaml
+services:
+  relay:
+    image: ghcr.io/furstfri/vscode-llm-mobile-bridge:latest
+    pull_policy: always
+    restart: unless-stopped
+    environment:
+      RELAY_HOST: 0.0.0.0
+      RELAY_PORT: 8765
+    ports:
+      - "127.0.0.1:8765:8765"
+```
+
+Set `llmMobileBridge.relayUrl` to the proxy URL (e.g.
+`wss://bridge.example.com`). The extension keeps an outbound connection to
+the relay and registers with its pairing token; "Copy Pairing Payload" then
+points the phone at the relay. The relay stores nothing, reads no session
+data, and needs no token configuration — phones are routed to the host whose
+pairing token they present. Sessions, transcripts, and message sending all
+run on the PC.
 
 ## Install the local MVP
 

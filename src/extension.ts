@@ -5,11 +5,13 @@ import type { SessionDescriptor, TimelineItem } from "./gateway/protocol.js";
 import { ClaudeReadOnlyAdapter, type ClaudePermissionMode } from "./providers/claude-adapter.js";
 import { CodexReadOnlyAdapter } from "./providers/codex-adapter.js";
 import { LocalGatewayServer } from "./transport/local-gateway-server.js";
+import { RelayHostClient } from "./transport/relay-host-client.js";
 
 const SECRET_KEY = "llmMobileBridge.pairingToken";
 
 class BridgeController implements vscode.Disposable {
   private server?: LocalGatewayServer;
+  private relayClient?: RelayHostClient;
   private gateway?: GatewayCore;
   private activePort?: number;
   private readonly status: vscode.StatusBarItem;
@@ -47,7 +49,19 @@ class BridgeController implements vscode.Disposable {
     try {
       this.activePort = await server.start();
       this.server = server;
-      this.status.text = "$(radio-tower) LLM Bridge: local";
+      const relayUrl = config.get<string>("relayUrl", "").trim();
+      if (relayUrl) {
+        try {
+          this.relayClient = new RelayHostClient({ relayUrl, token, localPort: this.activePort });
+          this.relayClient.start();
+          this.output.info(`Relay host client connecting to ${relayUrl}.`);
+        } catch (relayError) {
+          const message = relayError instanceof Error ? relayError.message : String(relayError);
+          this.output.error(`Relay host client failed to start: ${message}`);
+          await vscode.window.showWarningMessage(`LLM Mobile Bridge relay is misconfigured: ${message}`);
+        }
+      }
+      this.status.text = this.relayClient ? "$(radio-tower) LLM Bridge: local+relay" : "$(radio-tower) LLM Bridge: local";
       this.status.tooltip = "Loopback gateway is running. Click to copy pairing payload.";
       this.output.info(`Gateway started on loopback port ${this.activePort}.`);
     } catch (error) {
@@ -65,6 +79,8 @@ class BridgeController implements vscode.Disposable {
     const server = this.server;
     this.server = undefined;
     this.activePort = undefined;
+    this.relayClient?.stop();
+    this.relayClient = undefined;
     await server?.stop();
     this.setStopped();
     this.output.info("Gateway stopped.");
@@ -75,9 +91,11 @@ class BridgeController implements vscode.Disposable {
     if (!this.server || !this.activePort) await this.start();
     if (!this.server || !this.activePort) return;
     const token = await this.getOrCreateToken();
-    const configuredUrl = vscode.workspace.getConfiguration("llmMobileBridge")
-      .get<string>("mobileUrl", `ws://10.0.2.2:${this.activePort}`);
-    const url = buildMobileUrl(configuredUrl, this.activePort);
+    const config = vscode.workspace.getConfiguration("llmMobileBridge");
+    const relayUrl = config.get<string>("relayUrl", "").trim();
+    const configuredUrl = config.get<string>("mobileUrl", `ws://10.0.2.2:${this.activePort}`);
+    // With a relay configured, the phone connects to the relay domain as-is.
+    const url = relayUrl || buildMobileUrl(configuredUrl, this.activePort);
     await vscode.env.clipboard.writeText(JSON.stringify({ protocolVersion: 1, url, token }));
     await vscode.window.showInformationMessage("LLM Mobile Bridge pairing payload copied to the clipboard.");
   }
