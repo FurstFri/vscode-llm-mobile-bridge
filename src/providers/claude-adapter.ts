@@ -1,7 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, readdirSync } from "node:fs";
-import { homedir } from "node:os";
-import { delimiter, join } from "node:path";
 import {
   getSessionInfo,
   getSessionMessages,
@@ -18,6 +15,7 @@ import {
   type SessionMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import { EventChannel } from "./event-channel.js";
+import { resolveClaudeExecutable } from "./executables.js";
 import type {
   ProviderAdapter,
   ProviderSessionSnapshot,
@@ -331,27 +329,6 @@ export class ClaudeReadOnlyAdapter implements ProviderAdapter {
   }
 }
 
-export function resolveClaudeExecutable(configured?: string): string | undefined {
-  if (configured?.trim()) return configured.trim();
-  if (process.env.CLAUDE_BIN?.trim()) return process.env.CLAUDE_BIN.trim();
-  const names = process.platform === "win32" ? ["claude.exe"] : ["claude"];
-  const candidates: string[] = [];
-  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
-    if (dir) for (const name of names) candidates.push(join(dir, name));
-  }
-  const home = homedir();
-  for (const name of names) candidates.push(join(home, ".local", "bin", name));
-  const extensionRoot = join(home, ".vscode", "extensions");
-  if (existsSync(extensionRoot)) {
-    const bundled = readdirSync(extensionRoot, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory() && entry.name.startsWith("anthropic.claude-code-"))
-      .map((entry) => join(extensionRoot, entry.name, "resources", "native-binary", names[0]))
-      .sort();
-    const latest = bundled.at(-1);
-    if (latest) candidates.push(latest);
-  }
-  return candidates.find(existsSync);
-}
 
 function* mapClaudeStreamMessage(message: SDKMessage): Generator<ProviderTurnEvent> {
   const record = message as unknown as Record<string, unknown>;

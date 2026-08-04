@@ -1,6 +1,3 @@
-import { existsSync, readdirSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import type {
   ProviderAdapter,
   ProviderSessionSnapshot,
@@ -9,6 +6,7 @@ import type {
   TurnOptions,
 } from "../gateway/provider-adapter.js";
 import type { ProviderLimits, ProviderModel, TimelineItem } from "../gateway/protocol.js";
+import { resolveCodexExecutable } from "./executables.js";
 import { JsonRpcNotification, JsonRpcProcess } from "./json-rpc-client.js";
 
 export type CodexTurnSignal =
@@ -339,21 +337,6 @@ function extractItemTimestamp(item: Record<string, unknown>): number | undefined
   return undefined;
 }
 
-function resolveCodexExecutable(configured?: string): string {
-  if (configured) return configured;
-  if (process.env.CODEX_BIN) return process.env.CODEX_BIN;
-  const extensionRoot = join(homedir(), ".vscode", "extensions");
-  if (existsSync(extensionRoot)) {
-    const candidates = readdirSync(extensionRoot, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory() && entry.name.startsWith("openai.chatgpt-"))
-      .map((entry) => join(extensionRoot, entry.name, "bin", "windows-x86_64", "codex.exe"))
-      .filter(existsSync)
-      .sort();
-    const latest = candidates.at(-1);
-    if (latest) return latest;
-  }
-  return "codex";
-}
 
 function extractText(value: unknown): string {
   if (typeof value === "string") return value;

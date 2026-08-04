@@ -207,8 +207,12 @@ test("keeps provider status usable when a provider cannot answer", async () => {
 
   const event = await gateway.readProviderStatus();
 
-  assert.deepEqual(event.payload.providers, [{ provider: "codex", models: [] }]);
-  assert.equal(JSON.stringify(event).includes("private model diagnostic"), false);
+  // The phone still gets a usable answer, plus the reason models are missing.
+  assert.deepEqual(event.payload.providers, [{
+    provider: "codex",
+    models: [],
+    note: "private model diagnostic",
+  }]);
   assert.equal(JSON.stringify(event).includes("private limits diagnostic"), false);
 });
 

@@ -62,9 +62,11 @@ export class GatewayCore {
   /** Models and subscription usage, straight from each provider. */
   async readProviderStatus(correlationId: string = randomUUID()): Promise<GatewayEvent<{ providers: ProviderStatus[] }>> {
     const providers = await Promise.all([...this.adapters.values()].map(async (adapter) => {
+      let note: string | undefined;
       const [models, limits] = await Promise.all([
         adapter.listModels().catch((error: unknown) => {
-          this.log?.(`Model list unavailable (${adapter.provider}): ${describe(error)}`);
+          note = describe(error);
+          this.log?.(`Model list unavailable (${adapter.provider}): ${note}`);
           return [] as const;
         }),
         adapter.readLimits().catch((error: unknown) => {
@@ -76,6 +78,7 @@ export class GatewayCore {
         provider: adapter.provider,
         models: [...models],
         ...(limits ? { limits } : {}),
+        ...(note ? { note } : {}),
       };
     }));
     return this.gatewayEvent("provider.status", { providers }, correlationId) as GatewayEvent<{ providers: ProviderStatus[] }>;

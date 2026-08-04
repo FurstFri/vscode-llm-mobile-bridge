@@ -66,6 +66,8 @@ export interface ProviderStatus {
   provider: Provider;
   models: ProviderModel[];
   limits?: ProviderLimits;
+  /** Why the model list is empty, when it is — usually a missing CLI. */
+  note?: string;
 }
 
 export type GatewayEventType =
