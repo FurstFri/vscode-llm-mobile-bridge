@@ -6,13 +6,16 @@ import {
   query,
   type GetSessionInfoOptions,
   type GetSessionMessagesOptions,
+  type HookCallback,
   type ListSessionsOptions,
   type CanUseTool,
   type Options,
   type PermissionResult,
+  type PreToolUseHookInput,
   type SDKMessage,
   type SDKSessionInfo,
   type SessionMessage,
+  type SyncHookJSONOutput,
 } from "@anthropic-ai/claude-agent-sdk";
 import { EventChannel } from "./event-channel.js";
 import { resolveClaudeExecutable } from "./executables.js";
@@ -192,11 +195,21 @@ export class ClaudeReadOnlyAdapter implements ProviderAdapter {
     onMessage?: (message: SDKMessage) => ProviderTurnEvent[],
   ): AsyncIterable<ProviderTurnEvent> {
     const channel = new EventChannel<ProviderTurnEvent>();
+    const usePhonePermissions = this.permissionMode === "askOnPhone";
     const stream = this.source.runQuery({
       prompt: text,
       options: {
         ...queryOptions,
-        ...(this.permissionMode === "askOnPhone" ? { canUseTool: this.askPhone(channel) } : {}),
+        // canUseTool covers permission checks; AskUserQuestion bypasses that
+        // and needs a PreToolUse hook to reach us before the SDK invokes it.
+        ...(usePhonePermissions ? { canUseTool: this.askPhone(channel) } : {}),
+        hooks: {
+          ...(queryOptions.hooks ?? {}),
+          PreToolUse: [
+            ...(queryOptions.hooks?.PreToolUse ?? []),
+            { matcher: "AskUserQuestion", hooks: [this.askUserQuestionHook(channel)] },
+          ],
+        },
       },
     });
 
@@ -278,43 +291,81 @@ export class ClaudeReadOnlyAdapter implements ProviderAdapter {
    * Bridges the SDK's permission prompt to the phone. Denies on timeout so a
    * forgotten request cannot wedge the turn forever.
    */
-  private askPhone(channel: EventChannel<ProviderTurnEvent>): CanUseTool {
-    return (toolName, input, options) => new Promise<PermissionResult>((resolve) => {
+  /**
+   * The agent's AskUserQuestion tool has no headless UI, so we intercept it
+   * pre-tool-use, show the choices on the phone and return the picked option
+   * back to the model as a synthetic tool result via permissionDecision:deny
+   * — the SDK feeds `permissionDecisionReason` straight into the transcript.
+   */
+  private askUserQuestionHook(channel: EventChannel<ProviderTurnEvent>): HookCallback {
+    return async (rawInput, _toolUseId, options): Promise<SyncHookJSONOutput> => {
+      const input = rawInput as PreToolUseHookInput;
+      if (input.tool_name !== "AskUserQuestion") return { continue: true };
+      const question = parseUserQuestion(input.tool_name, (input.tool_input ?? {}) as Record<string, unknown>);
+      if (!question) return { continue: true };
+      const answer = await this.awaitPhoneAnswer(channel, {
+        toolName: input.tool_name,
+        question,
+        abortSignal: options.signal,
+      });
+      return {
+        continue: true,
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "deny",
+          permissionDecisionReason: answer.allow
+            ? `Пользователь ответил: ${answer.detail ?? "(без выбора)"}`
+            : answer.detail ?? "Пользователь не ответил",
+        },
+      } as SyncHookJSONOutput;
+    };
+  }
+
+  /** Shared plumbing: publish an approval event, wait for the phone. */
+  private awaitPhoneAnswer(
+    channel: EventChannel<ProviderTurnEvent>,
+    request: {
+      toolName: string;
+      abortSignal: AbortSignal;
+      question?: ReturnType<typeof parseUserQuestion>;
+      summary?: string;
+    },
+  ): Promise<{ allow: boolean; detail?: string }> {
+    return new Promise((resolve) => {
       const id = randomUUID();
-      const question = parseUserQuestion(toolName, input);
       const settle = (allow: boolean, detail?: string) => {
         clearTimeout(timer);
         this.pendingApprovals.delete(id);
         channel.push({
           type: "approval.request",
-          payload: { id, toolName, resolved: true, allow, ...(detail ? { answer: detail } : {}) },
+          payload: { id, toolName: request.toolName, resolved: true, allow, ...(detail ? { answer: detail } : {}) },
         });
-        if (question) {
-          // The tool itself has no UI here: hand the answer back as the
-          // tool's outcome so the model can act on the user's choice.
-          resolve({
-            behavior: "deny",
-            message: detail && allow
-              ? `Пользователь ответил: ${detail}`
-              : detail ?? "Пользователь не ответил",
-          });
-          return;
-        }
-        resolve(allow
-          ? { behavior: "allow", updatedInput: input }
-          : { behavior: "deny", message: detail ?? "Отклонено с телефона" });
+        resolve({ allow, detail });
       };
       const timer = setTimeout(() => settle(false, "Нет ответа с телефона"), APPROVAL_TIMEOUT_MS);
       timer.unref?.();
-      options.signal.addEventListener("abort", () => settle(false, "Ход прерван"), { once: true });
+      request.abortSignal.addEventListener("abort", () => settle(false, "Ход прерван"), { once: true });
       this.pendingApprovals.set(id, settle);
       channel.push({
         type: "approval.request",
-        payload: question
-          ? { id, toolName, kind: "question", resolved: false, ...question }
-          : { id, toolName, kind: "permission", summary: summarizeToolInput(toolName, input), resolved: false },
+        payload: request.question
+          ? { id, toolName: request.toolName, kind: "question", resolved: false, ...request.question }
+          : { id, toolName: request.toolName, kind: "permission", summary: request.summary, resolved: false },
       });
     });
+  }
+
+  private askPhone(channel: EventChannel<ProviderTurnEvent>): CanUseTool {
+    return async (toolName, input, options): Promise<PermissionResult> => {
+      const answer = await this.awaitPhoneAnswer(channel, {
+        toolName,
+        abortSignal: options.signal,
+        summary: summarizeToolInput(toolName, input),
+      });
+      return answer.allow
+        ? { behavior: "allow", updatedInput: input }
+        : { behavior: "deny", message: answer.detail ?? "Отклонено с телефона" };
+    };
   }
 
   private captureRateLimit(message: SDKMessage): void {

@@ -325,7 +325,53 @@ test("recognises the agent's question and its options", () => {
   assert.equal(parseUserQuestion("Bash", { command: "ls" }), undefined);
 });
 
-test("a chosen answer is handed back to the model as the tool outcome", async () => {
+test("intercepts AskUserQuestion via the PreToolUse hook", async () => {
+  let hook: ((input: unknown, id: string | undefined, opts: { signal: AbortSignal }) => Promise<unknown>) | undefined;
+  const adapter = new ClaudeReadOnlyAdapter({
+    permissionMode: "askOnPhone",
+    source: source({
+      runQuery: (params) => {
+        // AskUserQuestion skips canUseTool: the SDK invokes the PreToolUse
+        // hook we register on the "AskUserQuestion" matcher instead.
+        const hooks = (params.options as { hooks?: Record<string, Array<{ hooks: Array<typeof hook> }>> }).hooks;
+        hook = hooks?.PreToolUse?.at(-1)?.hooks?.[0];
+        return (async function* () {
+          if (!hook) throw new Error("hook not registered");
+          const result = await hook(
+            {
+              hook_event_name: "PreToolUse",
+              tool_name: "AskUserQuestion",
+              tool_input: { questions: [{ question: "Куда?", options: [{ label: "staging" }, { label: "prod" }] }] },
+              tool_use_id: "tu_1",
+            },
+            "tu_1",
+            { signal: new AbortController().signal },
+          ) as { hookSpecificOutput?: { permissionDecisionReason?: string } };
+          yield {
+            type: "assistant",
+            uuid: "assistant-hook",
+            session_id: sessionInfo.sessionId,
+            message: { role: "assistant", content: [{ type: "text", text: result.hookSpecificOutput?.permissionDecisionReason ?? "" }] },
+          } as unknown as SDKMessage;
+        })();
+      },
+    }),
+  });
+
+  const iterator = adapter.startTurn(sessionInfo.sessionId, "куда")[Symbol.asyncIterator]();
+  const first = await iterator.next();
+  const asked = first.value?.payload as { id: string; kind: string; options: string[] };
+  assert.equal(asked.kind, "question");
+  assert.equal(adapter.resolveApproval(asked.id, true, undefined, "prod"), true);
+
+  const seen: string[] = [];
+  for (let next = await iterator.next(); !next.done; next = await iterator.next()) {
+    seen.push(JSON.stringify(next.value?.payload ?? {}));
+  }
+  assert.ok(seen.some((entry) => entry.includes("Пользователь ответил: prod")));
+});
+
+test("a denied tool call reaches the model as a plain permission denial", async () => {
   const adapter = new ClaudeReadOnlyAdapter({
     permissionMode: "askOnPhone",
     source: source({
@@ -334,16 +380,12 @@ test("a chosen answer is handed back to the model as the tool outcome", async ()
           (name: string, input: Record<string, unknown>, options: { signal: AbortSignal }) => Promise<{
             behavior: string; message?: string;
           }>;
-        const asked = canUseTool(
-          "AskUserQuestion",
-          { questions: [{ question: "Куда деплоить?", options: [{ label: "staging" }, { label: "prod" }] }] },
-          { signal: new AbortController().signal },
-        );
+        const asked = canUseTool("Bash", { command: "rm -rf build" }, { signal: new AbortController().signal });
         return (async function* () {
           const verdict = await asked;
           yield {
             type: "assistant",
-            uuid: "assistant-q",
+            uuid: "assistant-denied",
             session_id: sessionInfo.sessionId,
             message: { role: "assistant", content: [{ type: "text", text: verdict.message ?? "" }] },
           } as unknown as SDKMessage;
@@ -352,20 +394,17 @@ test("a chosen answer is handed back to the model as the tool outcome", async ()
     }),
   });
 
-  const iterator = adapter.startTurn(sessionInfo.sessionId, "задеплой")[Symbol.asyncIterator]();
+  const iterator = adapter.startTurn(sessionInfo.sessionId, "снеси всё")[Symbol.asyncIterator]();
   const first = await iterator.next();
-  const asked = first.value?.payload as { id: string; kind: string; options: string[] };
-  assert.equal(asked.kind, "question");
-  assert.deepEqual(asked.options, ["staging", "prod"]);
-
-  assert.equal(adapter.resolveApproval(asked.id, true, undefined, "prod"), true);
+  const asked = first.value?.payload as { id: string; kind: string };
+  assert.equal(asked.kind, "permission");
+  assert.equal(adapter.resolveApproval(asked.id, false, "не надо"), true);
 
   const seen: string[] = [];
   for (let next = await iterator.next(); !next.done; next = await iterator.next()) {
-    const payload = JSON.stringify(next.value?.payload ?? {});
-    seen.push(payload);
+    seen.push(JSON.stringify(next.value?.payload ?? {}));
   }
-  assert.ok(seen.some((entry) => entry.includes("Пользователь ответил: prod")));
+  assert.ok(seen.some((entry) => entry.includes("не надо")));
 });
 
 test("startTurn is rejected when sending is disabled", async () => {
