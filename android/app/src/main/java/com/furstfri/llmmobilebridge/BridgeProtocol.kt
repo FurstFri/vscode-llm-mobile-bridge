@@ -25,13 +25,14 @@ object BridgeProtocol {
     }
 
     /** Builds the answer to a forwarded permission prompt. */
-    fun approvalResponse(id: String, approvalId: String, allow: Boolean): String =
+    fun approvalResponse(id: String, approvalId: String, allow: Boolean, choice: String? = null): String =
         JSONObject()
             .put("protocolVersion", 1)
             .put("id", id)
             .put("type", "approval.respond")
             .put("approvalId", approvalId)
             .put("allow", allow)
+            .apply { choice?.let { put("choice", it) } }
             .toString()
 
     fun parseSessions(response: JSONObject): List<BridgeSession>? {
@@ -91,12 +92,18 @@ object BridgeProtocol {
         if (event.optString("type") != "approval.request") return null
         val payload = event.optJSONObject("payload") ?: return null
         val id = payload.optString("id").ifBlank { return null }
+        val options = payload.optJSONArray("options") ?: JSONArray()
         return ApprovalRequest(
             id = id,
             toolName = payload.optString("toolName", "инструмент"),
             summary = payload.optNullableString("summary"),
             resolved = payload.optBoolean("resolved"),
             allowed = if (payload.has("allow")) payload.optBoolean("allow") else null,
+            kind = payload.optString("kind", "permission"),
+            question = payload.optNullableString("question"),
+            options = buildList { for (i in 0 until options.length()) add(options.getString(i)) },
+            multiSelect = payload.optBoolean("multiSelect"),
+            answer = payload.optNullableString("answer"),
         )
     }
 

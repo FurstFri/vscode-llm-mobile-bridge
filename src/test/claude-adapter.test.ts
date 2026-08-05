@@ -11,6 +11,7 @@ import type {
 } from "@anthropic-ai/claude-agent-sdk";
 import {
   ClaudeReadOnlyAdapter,
+  parseUserQuestion,
   type ClaudeSessionSource,
 } from "../providers/claude-adapter.js";
 
@@ -304,6 +305,67 @@ test("forwards a permission prompt to the phone and applies the answer", async (
   assert.deepEqual(resolved?.payload, { id: asked.id, toolName: "Bash", resolved: true, allow: true });
   const reply = events.find((event) => event.type === "item.complete");
   assert.match(JSON.stringify(reply?.payload), /"behavior\\":\\"allow/);
+});
+
+test("recognises the agent's question and its options", () => {
+  const parsed = parseUserQuestion("AskUserQuestion", {
+    questions: [{
+      question: "Куда деплоить?",
+      header: "Цель",
+      multiSelect: false,
+      options: [{ label: "staging", description: "тест" }, { label: "prod" }],
+    }],
+  });
+
+  assert.deepEqual(parsed, {
+    question: "Куда деплоить?",
+    options: ["staging", "prod"],
+    multiSelect: false,
+  });
+  assert.equal(parseUserQuestion("Bash", { command: "ls" }), undefined);
+});
+
+test("a chosen answer is handed back to the model as the tool outcome", async () => {
+  const adapter = new ClaudeReadOnlyAdapter({
+    permissionMode: "askOnPhone",
+    source: source({
+      runQuery: (params) => {
+        const canUseTool = (params.options as Record<string, unknown>).canUseTool as
+          (name: string, input: Record<string, unknown>, options: { signal: AbortSignal }) => Promise<{
+            behavior: string; message?: string;
+          }>;
+        const asked = canUseTool(
+          "AskUserQuestion",
+          { questions: [{ question: "Куда деплоить?", options: [{ label: "staging" }, { label: "prod" }] }] },
+          { signal: new AbortController().signal },
+        );
+        return (async function* () {
+          const verdict = await asked;
+          yield {
+            type: "assistant",
+            uuid: "assistant-q",
+            session_id: sessionInfo.sessionId,
+            message: { role: "assistant", content: [{ type: "text", text: verdict.message ?? "" }] },
+          } as unknown as SDKMessage;
+        })();
+      },
+    }),
+  });
+
+  const iterator = adapter.startTurn(sessionInfo.sessionId, "задеплой")[Symbol.asyncIterator]();
+  const first = await iterator.next();
+  const asked = first.value?.payload as { id: string; kind: string; options: string[] };
+  assert.equal(asked.kind, "question");
+  assert.deepEqual(asked.options, ["staging", "prod"]);
+
+  assert.equal(adapter.resolveApproval(asked.id, true, undefined, "prod"), true);
+
+  const seen: string[] = [];
+  for (let next = await iterator.next(); !next.done; next = await iterator.next()) {
+    const payload = JSON.stringify(next.value?.payload ?? {});
+    seen.push(payload);
+  }
+  assert.ok(seen.some((entry) => entry.includes("Пользователь ответил: prod")));
 });
 
 test("startTurn is rejected when sending is disabled", async () => {

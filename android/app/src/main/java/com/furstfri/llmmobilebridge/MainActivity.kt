@@ -527,11 +527,19 @@ private fun TimelineScreen(state: BridgeUiState, model: BridgeViewModel, padding
             }
             // Permission prompts sit at the end — they block the turn.
             items(state.approvals, key = ApprovalRequest::id) { approval ->
-                ApprovalCard(
-                    approval = approval,
-                    accent = providerColor(provider),
-                    onDecide = { allow -> model.respondToApproval(approval.id, allow) },
-                )
+                if (approval.kind == "question") {
+                    QuestionCard(
+                        approval = approval,
+                        accent = providerColor(provider),
+                        onAnswer = { choice -> model.respondToApproval(approval.id, true, choice) },
+                    )
+                } else {
+                    ApprovalCard(
+                        approval = approval,
+                        accent = providerColor(provider),
+                        onDecide = { allow -> model.respondToApproval(approval.id, allow) },
+                    )
+                }
             }
         }
         if (session?.capabilities?.canStartTurn != false) {
@@ -555,6 +563,44 @@ private fun TimelineEntry(item: TimelineItem, expanded: Boolean, onToggle: () ->
         item.kind == "message" -> AssistantMessage(item)
         item.kind == "reasoning" -> ReasoningEntry(item, expanded, onToggle)
         else -> ToolEntry(item, expanded, onToggle)
+    }
+}
+
+/** The agent asking the user to choose, answered with one tap. */
+@Composable
+private fun QuestionCard(approval: ApprovalRequest, accent: Color, onAnswer: (String) -> Unit) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(Vs.Surface, RoundedCornerShape(8.dp))
+            .border(1.dp, if (approval.resolved) Vs.Border else accent, RoundedCornerShape(8.dp))
+            .padding(12.dp),
+    ) {
+        Text("Вопрос агента", color = accent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            approval.question ?: approval.toolName,
+            color = Vs.Foreground,
+            fontSize = 14.sp,
+            lineHeight = 19.sp,
+        )
+        Spacer(Modifier.height(10.dp))
+        if (approval.resolved) {
+            Text("Ответ: ${approval.answer ?: "—"}", color = Vs.Dim, fontSize = 12.sp)
+        } else {
+            approval.options.forEach { option ->
+                OutlinedButton(
+                    onClick = { onAnswer(option) },
+                    shape = RoundedCornerShape(6.dp),
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+                ) {
+                    Text(option, color = Vs.Foreground, fontSize = 13.sp)
+                }
+            }
+            if (approval.options.isEmpty()) {
+                Text("Вариантов нет — ответьте сообщением ниже.", color = Vs.Faint, fontSize = 12.sp)
+            }
+        }
     }
 }
 
@@ -726,6 +772,16 @@ private fun ToolEntry(item: TimelineItem, expanded: Boolean, onToggle: () -> Uni
     }
 }
 
+/** Edit modes mirroring the panel's Modes picker; Claude only. */
+private val ClaudeModes = listOf(
+    "" to "режим: как в VS Code",
+    "auto" to "режим: авто",
+    "default" to "режим: спрашивать",
+    "acceptEdits" to "режим: править сразу",
+    "plan" to "режим: план",
+    "bypassPermissions" to "режим: без ограничений",
+)
+
 /** Options come from the provider itself; the empty value means its default. */
 private fun modelOptions(models: List<ProviderModel>): List<Pair<String, String>> =
     listOf("" to "модель по умолчанию") + models.map { it.id to it.label }
@@ -750,6 +806,15 @@ private fun shortLabel(options: List<Pair<String, String>>, value: String, fallb
     options.firstOrNull { it.first == value }?.second?.substringAfter(": ")?.takeIf { value.isNotEmpty() } ?: fallback
 
 /** "44% · сброс через 2 дн" — compact usage line for the header. */
+private fun modeHint(value: String): String? = when (value) {
+    "auto" -> "Разрешает безопасное, спрашивает про рискованное"
+    "default" -> "Спрашивать перед каждой правкой"
+    "acceptEdits" -> "Править файлы без вопросов"
+    "plan" -> "Сначала изучить и предложить план"
+    "bypassPermissions" -> "Разрешено всё, включая команды"
+    else -> null
+}
+
 private fun limitsLabel(limits: ProviderLimits?): String? {
     if (limits == null) return null
     limits.note?.let { return it }
@@ -782,6 +847,7 @@ private fun Composer(state: BridgeUiState, model: BridgeViewModel) {
     val canSend = !state.sending && state.composerText.isNotBlank()
     var modelMenu by remember { mutableStateOf(false) }
     var effortMenu by remember { mutableStateOf(false) }
+    var modeMenu by remember { mutableStateOf(false) }
     Column(
         Modifier
             .fillMaxWidth()
@@ -884,6 +950,39 @@ private fun Composer(state: BridgeUiState, model: BridgeViewModel) {
                                 },
                                 onClick = { model.setTurnEffort(value); effortMenu = false },
                             )
+                        }
+                    }
+                }
+                if (provider == "claude") {
+                    Spacer(Modifier.width(8.dp))
+                    Box {
+                        ComposerChip(
+                            label = shortLabel(ClaudeModes, state.turnMode, "режим"),
+                            enabled = !state.sending,
+                            accent = if (state.turnMode.isNotEmpty()) accent else null,
+                        ) { modeMenu = true }
+                        DropdownMenu(
+                            expanded = modeMenu,
+                            onDismissRequest = { modeMenu = false },
+                            containerColor = Vs.SurfaceRaised,
+                        ) {
+                            ClaudeModes.forEach { (value, label) ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Column {
+                                            Text(
+                                                label.substringAfter(": ").replaceFirstChar(Char::uppercase),
+                                                fontSize = 13.sp,
+                                                color = if (state.turnMode == value) accent else Vs.Foreground,
+                                            )
+                                            modeHint(value)?.let {
+                                                Text(it, fontSize = 11.sp, color = Vs.Faint, maxLines = 2)
+                                            }
+                                        }
+                                    },
+                                    onClick = { model.setTurnMode(value); modeMenu = false },
+                                )
+                            }
                         }
                     }
                 }

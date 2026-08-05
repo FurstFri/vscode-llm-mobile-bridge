@@ -246,6 +246,8 @@ export class ClaudeReadOnlyAdapter implements ProviderAdapter {
   private baseQueryOptions(turn?: TurnOptions): Partial<Options> {
     const executable = this.claudeExecutable();
     const extra: Record<string, unknown> = {};
+    // The phone can pick the edit mode for this turn, mirroring the panel.
+    if (turn?.mode) extra.permissionMode = turn.mode;
     if (turn?.model) extra.model = turn.model;
     if (turn?.effort === "off") {
       extra.thinking = { type: "disabled" };
@@ -263,12 +265,12 @@ export class ClaudeReadOnlyAdapter implements ProviderAdapter {
     };
   }
 
-  /** Answers a pending approval; returns false when nothing was waiting. */
-  resolveApproval(id: string, allow: boolean, message?: string): boolean {
+  /** Answers a pending approval or question; false when nothing was waiting. */
+  resolveApproval(id: string, allow: boolean, message?: string, choice?: string): boolean {
     const pending = this.pendingApprovals.get(id);
     if (!pending) return false;
     this.pendingApprovals.delete(id);
-    pending(allow, message);
+    pending(allow, choice ?? message);
     return true;
   }
 
@@ -279,10 +281,25 @@ export class ClaudeReadOnlyAdapter implements ProviderAdapter {
   private askPhone(channel: EventChannel<ProviderTurnEvent>): CanUseTool {
     return (toolName, input, options) => new Promise<PermissionResult>((resolve) => {
       const id = randomUUID();
+      const question = parseUserQuestion(toolName, input);
       const settle = (allow: boolean, detail?: string) => {
         clearTimeout(timer);
         this.pendingApprovals.delete(id);
-        channel.push({ type: "approval.request", payload: { id, toolName, resolved: true, allow } });
+        channel.push({
+          type: "approval.request",
+          payload: { id, toolName, resolved: true, allow, ...(detail ? { answer: detail } : {}) },
+        });
+        if (question) {
+          // The tool itself has no UI here: hand the answer back as the
+          // tool's outcome so the model can act on the user's choice.
+          resolve({
+            behavior: "deny",
+            message: detail && allow
+              ? `Пользователь ответил: ${detail}`
+              : detail ?? "Пользователь не ответил",
+          });
+          return;
+        }
         resolve(allow
           ? { behavior: "allow", updatedInput: input }
           : { behavior: "deny", message: detail ?? "Отклонено с телефона" });
@@ -293,7 +310,9 @@ export class ClaudeReadOnlyAdapter implements ProviderAdapter {
       this.pendingApprovals.set(id, settle);
       channel.push({
         type: "approval.request",
-        payload: { id, toolName, summary: summarizeToolInput(toolName, input), resolved: false },
+        payload: question
+          ? { id, toolName, kind: "question", resolved: false, ...question }
+          : { id, toolName, kind: "permission", summary: summarizeToolInput(toolName, input), resolved: false },
       });
     });
   }
@@ -474,6 +493,34 @@ function asObject(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
     : undefined;
+}
+
+/**
+ * Recognises the agent asking the user to choose. The tool has no interface
+ * in a headless session, so the phone provides one.
+ */
+export function parseUserQuestion(
+  toolName: string,
+  input: Record<string, unknown>,
+): { question: string; options: string[]; multiSelect: boolean } | undefined {
+  if (toolName !== "AskUserQuestion") return undefined;
+  const questions = Array.isArray(input.questions) ? input.questions : [];
+  const first = questions[0] as Record<string, unknown> | undefined;
+  if (!first) return undefined;
+  const options = Array.isArray(first.options)
+    ? first.options
+        .map((option) => {
+          if (typeof option === "string") return option;
+          const record = option as Record<string, unknown>;
+          return typeof record?.label === "string" ? record.label : undefined;
+        })
+        .filter((label): label is string => Boolean(label))
+    : [];
+  return {
+    question: typeof first.question === "string" ? first.question : toolName,
+    options,
+    multiSelect: first.multiSelect === true,
+  };
 }
 
 /** One readable line describing what the tool is about to do. */

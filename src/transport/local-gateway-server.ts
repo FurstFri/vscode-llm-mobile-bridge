@@ -89,21 +89,21 @@ export class LocalGatewayServer {
         const event = await this.gateway.listSessions(request.id);
         this.send(socket, { protocolVersion: 1, id: request.id, ok: true, type: "event", event });
       } else if (request.type === "approval.respond") {
-        this.gateway.respondToApproval(request.approvalId, request.allow, request.message);
+        this.gateway.respondToApproval(request.approvalId, request.allow, request.message, request.choice);
         this.send(socket, { protocolVersion: 1, id: request.id, ok: true, type: "approval.ack" });
       } else if (request.type === "provider.status") {
         const event = await this.gateway.readProviderStatus(request.id);
         this.send(socket, { protocolVersion: 1, id: request.id, ok: true, type: "event", event });
       } else if (request.type === "turn.start") {
         const owner = this.ownerFor(socket);
-        const options = { model: request.model, effort: request.effort };
+        const options = { model: request.model, effort: request.effort, mode: request.mode };
         for await (const event of this.gateway.startTurn(request.sessionRef, owner, request.text, request.id, options)) {
           this.send(socket, { protocolVersion: 1, id: request.id, ok: true, type: "event", event });
         }
         this.send(socket, { protocolVersion: 1, id: request.id, ok: true, type: "turn.end" });
       } else if (request.type === "session.new") {
         const owner = this.ownerFor(socket);
-        const options = { model: request.model, effort: request.effort };
+        const options = { model: request.model, effort: request.effort, mode: request.mode };
         for await (const event of this.gateway.startNewSession(request.provider, owner, request.text, request.id, options)) {
           this.send(socket, { protocolVersion: 1, id: request.id, ok: true, type: "event", event });
         }

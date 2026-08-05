@@ -65,6 +65,12 @@ data class ApprovalRequest(
     val summary: String? = null,
     val resolved: Boolean = false,
     val allowed: Boolean? = null,
+    /** "question" prompts offer choices instead of allow/deny. */
+    val kind: String = "permission",
+    val question: String? = null,
+    val options: List<String> = emptyList(),
+    val multiSelect: Boolean = false,
+    val answer: String? = null,
 )
 
 data class TimelineItem(
@@ -104,6 +110,7 @@ data class BridgeUiState(
     val composerText: String = "",
     val turnModel: String = "",
     val turnEffort: String = "",
+    val turnMode: String = "",
     val sending: Boolean = false,
     val error: String? = null,
 ) {

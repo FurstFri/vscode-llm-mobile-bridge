@@ -16,6 +16,7 @@ export type MobileRequest =
       text: string;
       model?: string;
       effort?: string;
+      mode?: string;
     }
   | {
       protocolVersion: 1;
@@ -24,6 +25,8 @@ export type MobileRequest =
       approvalId: string;
       allow: boolean;
       message?: string;
+      /** The option the user picked, for AskUserQuestion prompts. */
+      choice?: string;
     }
   | {
       protocolVersion: 1;
@@ -33,6 +36,7 @@ export type MobileRequest =
       text: string;
       model?: string;
       effort?: string;
+      mode?: string;
     };
 
 export type MobileResponse =

@@ -90,26 +90,44 @@ class BridgeClient(private val listener: Listener) {
         send(hostId, "provider.status", emptyMap())
     }
 
-    fun sendTurn(hostId: String, sessionRef: String, text: String, model: String? = null, effort: String? = null) {
+    fun sendTurn(
+        hostId: String,
+        sessionRef: String,
+        text: String,
+        model: String? = null,
+        effort: String? = null,
+        mode: String? = null,
+    ) {
         send(hostId, "turn.start", buildMap {
             put("sessionRef", sessionRef)
             put("text", text)
             model?.takeIf(String::isNotBlank)?.let { put("model", it) }
             effort?.takeIf(String::isNotBlank)?.let { put("effort", it) }
+            mode?.takeIf(String::isNotBlank)?.let { put("mode", it) }
         })
     }
 
-    fun sendNewChat(hostId: String, provider: String, text: String, model: String? = null, effort: String? = null) {
+    fun sendNewChat(
+        hostId: String,
+        provider: String,
+        text: String,
+        model: String? = null,
+        effort: String? = null,
+        mode: String? = null,
+    ) {
         send(hostId, "session.new", buildMap {
             put("provider", provider)
             put("text", text)
             model?.takeIf(String::isNotBlank)?.let { put("model", it) }
             effort?.takeIf(String::isNotBlank)?.let { put("effort", it) }
+            mode?.takeIf(String::isNotBlank)?.let { put("mode", it) }
         })
     }
 
-    fun sendApproval(hostId: String, approvalId: String, allow: Boolean) {
-        sockets[hostId]?.send(BridgeProtocol.approvalResponse(UUID.randomUUID().toString(), approvalId, allow))
+    fun sendApproval(hostId: String, approvalId: String, allow: Boolean, choice: String? = null) {
+        sockets[hostId]?.send(
+            BridgeProtocol.approvalResponse(UUID.randomUUID().toString(), approvalId, allow, choice),
+        )
     }
 
     fun close(hostId: String) {

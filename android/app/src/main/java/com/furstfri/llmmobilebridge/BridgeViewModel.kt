@@ -98,6 +98,7 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application),
                 approvals = emptyList(),
                 turnModel = "",
                 turnEffort = "",
+                turnMode = "",
                 error = null,
             )
         }
@@ -115,6 +116,7 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application),
                 composerText = "",
                 turnModel = "",
                 turnEffort = "",
+                turnMode = "",
                 sending = false,
                 error = null,
             )
@@ -127,6 +129,10 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application),
 
     fun setTurnEffort(value: String) {
         mutableState.update { it.copy(turnEffort = value) }
+    }
+
+    fun setTurnMode(value: String) {
+        mutableState.update { it.copy(turnMode = value) }
     }
 
     fun closeTimeline() {
@@ -174,10 +180,10 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application),
             )
         }
         if (session != null) {
-            client.sendTurn(hostId, session.ref, text, current.turnModel, current.turnEffort)
+            client.sendTurn(hostId, session.ref, text, current.turnModel, current.turnEffort, current.turnMode)
         } else {
             val provider = current.newChatProvider ?: return
-            client.sendNewChat(hostId, provider, text, current.turnModel, current.turnEffort)
+            client.sendNewChat(hostId, provider, text, current.turnModel, current.turnEffort, current.turnMode)
         }
     }
 
@@ -238,16 +244,16 @@ class BridgeViewModel(application: Application) : AndroidViewModel(application),
         }
     }
 
-    fun respondToApproval(id: String, allow: Boolean) {
+    fun respondToApproval(id: String, allow: Boolean, choice: String? = null) {
         val current = state.value
         val hostId = current.selectedSession?.hostId ?: current.newChatHostId ?: return
         // Show the decision immediately; the machine confirms it right after.
         mutableState.update {
             it.copy(approvals = it.approvals.map { approval ->
-                if (approval.id == id) approval.copy(resolved = true, allowed = allow) else approval
+                if (approval.id == id) approval.copy(resolved = true, allowed = allow, answer = choice) else approval
             })
         }
-        client.sendApproval(hostId, id, allow)
+        client.sendApproval(hostId, id, allow, choice)
     }
 
     override fun onTurnItem(hostId: String, item: TimelineItem) = onUi {

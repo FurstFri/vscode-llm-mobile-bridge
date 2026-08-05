@@ -43,6 +43,8 @@ export type ProviderTurnEvent = {
 export interface TurnOptions {
   model?: string;
   effort?: string;
+  /** Claude's edit mode: default | acceptEdits | plan | auto | bypassPermissions. */
+  mode?: string;
 }
 
 /** Payload of the adapter-emitted "session.new" event. */
@@ -69,5 +71,5 @@ export interface ProviderAdapter {
    * Answers a permission prompt this adapter forwarded to the phone.
    * Returns false when the id is not (or no longer) pending.
    */
-  resolveApproval?(id: string, allow: boolean, message?: string): boolean;
+  resolveApproval?(id: string, allow: boolean, message?: string, choice?: string): boolean;
 }
