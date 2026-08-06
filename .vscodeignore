@@ -18,3 +18,5 @@ dist/gateway-daemon.d.ts
 dist/gateway-daemon-config.js
 dist/gateway-daemon-config.d.ts
 **/test/**
+*.tmp.mjs
+*.tmp.cjs
