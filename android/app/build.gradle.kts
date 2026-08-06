@@ -14,8 +14,8 @@ android {
         applicationId = "com.furstfri.llmmobilebridge"
         minSdk = 26
         targetSdk = 36
-        versionCode = 16
-        versionName = "0.11.0"
+        versionCode = 17
+        versionName = "0.12.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
