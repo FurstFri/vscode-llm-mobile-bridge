@@ -10,7 +10,8 @@ const thread = {
   name: "Codex conversation",
   preview: "private prompt preview",
   cwd: "C:\\workspace",
-  updatedAt: 42,
+  // Epoch seconds — the shape some Codex builds report.
+  updatedAt: 1_775_000_000,
   status: { type: "idle" },
   turns: [{
     id: "turn-1",
@@ -33,7 +34,7 @@ test("lists matching Codex workspace threads with metadata", async () => {
     providerSessionId: "private-codex-thread",
     title: "Codex conversation",
     project: "workspace",
-    updatedAt: 42,
+    updatedAt: 1_775_000_000_000,
     capabilities: { canRead: true, canStartTurn: true, canApprove: false },
   }]);
   assert.equal(JSON.stringify(sessions).includes("C:\\workspace"), false);
@@ -80,7 +81,7 @@ test("normalizes Codex turns without exposing thread metadata", async () => {
 
   const snapshot = await adapter.readSnapshot(thread.id);
 
-  assert.equal(snapshot.revision, "42:turn-1:agent-1");
+  assert.equal(snapshot.revision, "1775000000:turn-1:agent-1");
   assert.equal(snapshot.state, "idle");
   assert.deepEqual(snapshot.items, [
     { id: "user-1", kind: "message", role: "user", text: "Please inspect", status: "completed" },
@@ -88,6 +89,34 @@ test("normalizes Codex turns without exposing thread metadata", async () => {
     { id: "command-1", kind: "tool", text: "rg --files\nREADME.md", status: "completed" },
     { id: "agent-1", kind: "message", role: "assistant", text: "Inspection complete", status: "completed" },
   ]);
+});
+
+test("reads an ISO thread time and keeps the raw value as the change token", async () => {
+  // Some Codex builds report ISO text where others report epoch seconds.
+  const isoThread = { ...thread, updatedAt: "2026-08-06T10:00:00.000Z" };
+  const adapter = new CodexReadOnlyAdapter({
+    source: source({
+      listThreads: async () => ({ data: [isoThread] }),
+      readThread: async () => ({ thread: isoThread }),
+    }),
+  });
+
+  const [session] = await adapter.listSessions();
+  const snapshot = await adapter.readSnapshot(isoThread.id);
+
+  assert.equal(session?.updatedAt, Date.parse("2026-08-06T10:00:00.000Z"));
+  assert.equal(snapshot.revision, "2026-08-06T10:00:00.000Z:turn-1:agent-1");
+});
+
+test("omits an implausible thread time instead of reporting 1970", async () => {
+  const zeroed = { ...thread, updatedAt: 0 };
+  const adapter = new CodexReadOnlyAdapter({
+    source: source({ listThreads: async () => ({ data: [zeroed] }) }),
+  });
+
+  const [session] = await adapter.listSessions();
+
+  assert.equal("updatedAt" in (session ?? {}), false);
 });
 
 test("maps the Codex model list and hides internal entries", async () => {

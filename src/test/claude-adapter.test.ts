@@ -19,7 +19,7 @@ const sessionInfo: SDKSessionInfo = {
   sessionId: "private-claude-session",
   summary: "Generated summary",
   customTitle: "Chosen title",
-  lastModified: 1234,
+  lastModified: 1_775_000_000_000,
   fileSize: 5678,
   cwd: "C:/private/workspace",
 };
@@ -81,10 +81,20 @@ test("lists Claude sessions with metadata without exposing workspace paths", asy
     providerSessionId: sessionInfo.sessionId,
     title: "Chosen title",
     project: "workspace",
-    updatedAt: 1234,
+    updatedAt: 1_775_000_000_000,
     capabilities: { canRead: true, canStartTurn: true, canApprove: false },
   }]);
   assert.equal(JSON.stringify(sessions).includes(sessionInfo.cwd ?? ""), false);
+});
+
+test("omits an implausible last-modified time instead of reporting 1970", async () => {
+  const adapter = new ClaudeReadOnlyAdapter({
+    source: source({ listSessions: async () => [{ ...sessionInfo, lastModified: 0 }] }),
+  });
+
+  const [session] = await adapter.listSessions();
+
+  assert.equal("updatedAt" in (session ?? {}), false);
 });
 
 test("lists sessions across all projects when no directory filter is set", async () => {
@@ -421,7 +431,7 @@ test("normalizes Claude transcript text, reasoning, and completed tool use", asy
 
   const snapshot = await adapter.readSnapshot(sessionInfo.sessionId);
 
-  assert.equal(snapshot.revision, "1234:5678:tool-result-1");
+  assert.equal(snapshot.revision, "1775000000000:5678:tool-result-1");
   assert.equal(snapshot.state, "idle");
   assert.deepEqual(snapshot.items, [
     {

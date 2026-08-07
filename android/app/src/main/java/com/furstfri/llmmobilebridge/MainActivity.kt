@@ -1,9 +1,14 @@
 package com.furstfri.llmmobilebridge
 
+import android.Manifest
+import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -45,6 +50,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
@@ -62,6 +68,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -96,23 +104,65 @@ private val BridgeColors = darkColorScheme(
 )
 
 class MainActivity : ComponentActivity() {
+    /** Set when a notification points at one conversation; cleared once opened. */
+    private val deepLink = mutableStateOf<Pair<String, String>?>(null)
+
+    private val notificationPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // FLAG_SECURE intentionally not set: screenshots and screen recording
         // are allowed by user request.
         enableEdgeToEdge()
+        readDeepLink(intent)
+        // The sockets live in the service, so closing the app no longer drops
+        // a question the machine is waiting on.
+        BridgeService.start(this)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
         setContent {
             MaterialTheme(colorScheme = BridgeColors) {
                 val model: BridgeViewModel = viewModel()
                 val state by model.state.collectAsState()
-                BridgeScreen(state, model)
+                BridgeScreen(state, model, deepLink)
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        readDeepLink(intent)
+    }
+
+    private fun readDeepLink(intent: Intent?) {
+        val hostId = intent?.getStringExtra(EXTRA_HOST_ID).orEmpty()
+        val sessionRef = intent?.getStringExtra(EXTRA_SESSION_REF).orEmpty()
+        if (hostId.isBlank() || sessionRef.isBlank()) return
+        deepLink.value = hostId to sessionRef
+    }
+
+    companion object {
+        const val EXTRA_HOST_ID = "llmMobileBridge.hostId"
+        const val EXTRA_SESSION_REF = "llmMobileBridge.sessionRef"
     }
 }
 
 @Composable
-private fun BridgeScreen(state: BridgeUiState, model: BridgeViewModel) {
+private fun BridgeScreen(
+    state: BridgeUiState,
+    model: BridgeViewModel,
+    deepLink: MutableState<Pair<String, String>?>,
+) {
+    // A tapped notification names a chat the machine may not have listed yet,
+    // so keep trying as session lists arrive.
+    LaunchedEffect(state.sessions, deepLink.value) {
+        val target = deepLink.value ?: return@LaunchedEffect
+        if (model.selectByRef(target.first, target.second)) deepLink.value = null
+    }
+    LaunchedEffect(Unit) { model.checkForUpdate() }
     // Reconnect immediately when the screen wakes up / the app returns to
     // the foreground — the socket usually dies while the phone is locked.
     LifecycleResumeEffect(Unit) {
@@ -127,11 +177,61 @@ private fun BridgeScreen(state: BridgeUiState, model: BridgeViewModel) {
         }
     }
     Scaffold(containerColor = MaterialTheme.colorScheme.background) { padding ->
-        when {
-            state.pairings.isEmpty() || state.addingHost -> PairingScreen(state, model, padding)
-            state.selectedSession != null || state.newChatProvider != null ->
-                TimelineScreen(state, model, padding)
-            else -> SessionsScreen(state, model, padding)
+        Column(Modifier.fillMaxSize()) {
+            UpdateBanner(state, model, padding)
+            when {
+                state.pairings.isEmpty() || state.addingHost -> PairingScreen(state, model, padding)
+                state.selectedSession != null || state.newChatProvider != null ->
+                    TimelineScreen(state, model, padding)
+                else -> SessionsScreen(state, model, padding)
+            }
+        }
+    }
+}
+
+/**
+ * The app is installed from a GitHub release rather than a store, so it has to
+ * offer its own update path.
+ */
+@Composable
+private fun UpdateBanner(state: BridgeUiState, model: BridgeViewModel, padding: PaddingValues) {
+    val release = state.update
+    if (release == null && state.updateStatus == null) return
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = padding.calculateTopPadding())
+            .background(Vs.Surface)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+    ) {
+        if (release != null) {
+            Text(
+                "Доступна версия ${release.version}",
+                color = Vs.Foreground,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+        state.updateStatus?.let {
+            Text(it, color = Vs.Dim, fontSize = 12.sp)
+        }
+        if (release != null) {
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Button(
+                    onClick = model::installUpdate,
+                    shape = RoundedCornerShape(4.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Vs.Claude, contentColor = Color(0xFF1E1E1E)),
+                ) { Text("Обновить", fontWeight = FontWeight.SemiBold) }
+                Text(
+                    "позже",
+                    color = Vs.Faint,
+                    fontSize = 12.sp,
+                    modifier = Modifier
+                        .clickable { model.dismissUpdate() }
+                        .padding(horizontal = 6.dp, vertical = 4.dp),
+                )
+            }
         }
     }
 }
@@ -142,6 +242,13 @@ private fun BridgeScreen(state: BridgeUiState, model: BridgeViewModel) {
 
 @Composable
 private fun PairingScreen(state: BridgeUiState, model: BridgeViewModel, padding: PaddingValues) {
+    // Scanning replaces copying JSON between two machines by hand.
+    val scanner = rememberLauncherForActivityResult(ScanContract()) { result ->
+        result.contents?.takeIf(String::isNotBlank)?.let {
+            model.updatePairingText(it)
+            model.pair()
+        }
+    }
     Column(
         modifier = Modifier.fillMaxSize().padding(padding).padding(24.dp),
         verticalArrangement = Arrangement.Center,
@@ -157,11 +264,27 @@ private fun PairingScreen(state: BridgeUiState, model: BridgeViewModel, padding:
         }
         Spacer(Modifier.height(8.dp))
         Text(
-            "В VS Code откройте панель LLM Bridge и выполните «Скопировать пейринг для телефона», затем вставьте JSON сюда."
+            "В VS Code откройте панель LLM Bridge и выполните «Показать QR для телефона» — либо скопируйте пейринг и вставьте JSON сюда."
                 + if (state.addingHost) " Так можно подключить и удалённый сервер, открытый через Remote-SSH." else "",
             color = Vs.Dim,
             fontSize = 13.sp,
         )
+        Spacer(Modifier.height(14.dp))
+        Button(
+            onClick = {
+                scanner.launch(
+                    ScanOptions()
+                        .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                        .setPrompt("Наведите на QR в VS Code")
+                        .setBeepEnabled(false)
+                        .setOrientationLocked(false),
+                )
+            },
+            shape = RoundedCornerShape(4.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Vs.Claude, contentColor = Color(0xFF1E1E1E)),
+        ) {
+            Text("Сканировать QR", fontWeight = FontWeight.SemiBold)
+        }
         if (state.pairings.isNotEmpty()) {
             Spacer(Modifier.height(14.dp))
             state.pairings.forEach { pairing ->
@@ -288,6 +411,15 @@ private fun SessionsScreen(state: BridgeUiState, model: BridgeViewModel, padding
             }
             OutlinedButton(onClick = model::beginAddHost, shape = RoundedCornerShape(4.dp)) {
                 Text("+ Компьютер", color = Vs.Dim, fontSize = 13.sp)
+            }
+            // Re-finds a paired machine whose address changed; never pairs a
+            // new one, because the announcement carries no token.
+            OutlinedButton(
+                onClick = model::discover,
+                enabled = !state.discovering,
+                shape = RoundedCornerShape(4.dp),
+            ) {
+                Text(if (state.discovering) "Поиск…" else "Найти в сети", color = Vs.Dim, fontSize = 13.sp)
             }
         }
         HorizontalPager(

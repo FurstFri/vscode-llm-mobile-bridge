@@ -2,302 +2,68 @@ package com.furstfri.llmmobilebridge
 
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.viewModelScope
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.launch
 
-class BridgeViewModel(application: Application) : AndroidViewModel(application), BridgeClient.Listener {
-    private val store = SecurePairingStore(application)
-    private val client = BridgeClient(this)
-    private val mutableState = MutableStateFlow(BridgeUiState())
-    val state: StateFlow<BridgeUiState> = mutableState.asStateFlow()
+/**
+ * A thin view over [BridgeRepository]. The sockets and the state deliberately
+ * outlive this object: the foreground service keeps them running while the UI
+ * is closed, so nothing is torn down when the Activity goes away.
+ */
+class BridgeViewModel(application: Application) : AndroidViewModel(application) {
+    val state: StateFlow<BridgeUiState> = BridgeRepository.state
 
     init {
-        val pairings = store.load()
-        if (pairings.isNotEmpty()) {
-            mutableState.update { it.copy(pairings = pairings) }
-            client.connectAll(pairings)
-        }
+        BridgeRepository.initialize(application)
     }
 
-    fun updatePairingText(value: String) {
-        mutableState.update { it.copy(pairingText = value, error = null) }
-    }
+    fun updatePairingText(value: String) = BridgeRepository.updatePairingText(value)
 
-    /** Opens the pairing screen to add one more machine. */
-    fun beginAddHost() {
-        mutableState.update { it.copy(addingHost = true, pairingText = "", error = null) }
-    }
+    fun beginAddHost() = BridgeRepository.beginAddHost()
 
-    fun cancelAddHost() {
-        mutableState.update { it.copy(addingHost = false, pairingText = "", error = null) }
-    }
+    fun cancelAddHost() = BridgeRepository.cancelAddHost()
 
-    fun pair() {
-        val pairing = runCatching { BridgeProtocol.parsePairing(state.value.pairingText) }
-            .getOrElse {
-                mutableState.update { current -> current.copy(error = it.message ?: "Пейринг некорректен") }
-                return
-            }
-        // Re-pairing the same machine replaces its entry instead of duplicating it.
-        val existing = state.value.pairings.firstOrNull { it.url == pairing.url && it.token == pairing.token }
-        val stored = if (existing != null) pairing.copy(id = existing.id) else pairing
-        val pairings = state.value.pairings.filterNot { it.id == stored.id } + stored
-        store.save(pairings)
-        mutableState.update {
-            it.copy(pairings = pairings, pairingText = "", addingHost = false, error = null)
-        }
-        client.connect(stored)
-    }
+    fun pair() = BridgeRepository.pair()
 
-    fun reconnect() {
-        client.connectAll(state.value.pairings)
-    }
+    fun reconnect() = BridgeRepository.reconnect()
 
-    /** Reconnects machines that dropped; used on screen wake and retries. */
-    fun reconnectIfNeeded() {
-        val current = state.value
-        current.pairings
-            .filter { current.connections[it.id] != ConnectionState.CONNECTED }
-            .forEach(client::connect)
-    }
+    fun reconnectIfNeeded() = BridgeRepository.reconnectIfNeeded()
 
-    /** Removes one machine; keeps the others paired. */
-    fun forgetHost(hostId: String) {
-        client.close(hostId)
-        val pairings = state.value.pairings.filterNot { it.id == hostId }
-        if (pairings.isEmpty()) store.clear() else store.save(pairings)
-        mutableState.update { current ->
-            current.copy(
-                pairings = pairings,
-                connections = current.connections - hostId,
-                sessions = current.sessions.filterNot { it.hostId == hostId },
-                providerStatus = current.providerStatus - hostId,
-                selectedSession = current.selectedSession?.takeIf { it.hostId != hostId },
-                timeline = if (current.selectedSession?.hostId == hostId) emptyList() else current.timeline,
-            )
-        }
-    }
+    fun forgetHost(hostId: String) = BridgeRepository.forgetHost(hostId)
 
-    fun unpair() {
-        client.closeAll()
-        store.clear()
-        mutableState.value = BridgeUiState()
-    }
+    fun unpair() = BridgeRepository.unpair()
 
-    fun select(session: BridgeSession) {
-        mutableState.update {
-            it.copy(
-                selectedSession = session,
-                newChatHostId = null,
-                newChatProvider = null,
-                timeline = emptyList(),
-                approvals = emptyList(),
-                turnModel = "",
-                turnEffort = "",
-                turnMode = "",
-                error = null,
-            )
-        }
-        client.requestSnapshot(session.hostId, session.ref)
-    }
+    fun select(session: BridgeSession) = BridgeRepository.select(session)
 
-    fun startNewChat(hostId: String, provider: String) {
-        mutableState.update {
-            it.copy(
-                selectedSession = null,
-                newChatHostId = hostId,
-                newChatProvider = provider,
-                timeline = emptyList(),
-                approvals = emptyList(),
-                composerText = "",
-                turnModel = "",
-                turnEffort = "",
-                turnMode = "",
-                sending = false,
-                error = null,
-            )
-        }
-    }
+    fun selectByRef(hostId: String, sessionRef: String): Boolean =
+        BridgeRepository.selectByRef(hostId, sessionRef)
 
-    fun setTurnModel(value: String) {
-        mutableState.update { it.copy(turnModel = value) }
-    }
+    fun startNewChat(hostId: String, provider: String) = BridgeRepository.startNewChat(hostId, provider)
 
-    fun setTurnEffort(value: String) {
-        mutableState.update { it.copy(turnEffort = value) }
-    }
+    fun setTurnModel(value: String) = BridgeRepository.setTurnModel(value)
 
-    fun setTurnMode(value: String) {
-        mutableState.update { it.copy(turnMode = value) }
-    }
+    fun setTurnEffort(value: String) = BridgeRepository.setTurnEffort(value)
 
-    fun closeTimeline() {
-        mutableState.update {
-            it.copy(selectedSession = null, newChatHostId = null, newChatProvider = null, timeline = emptyList())
-        }
-    }
+    fun setTurnMode(value: String) = BridgeRepository.setTurnMode(value)
 
-    fun refresh() {
-        client.refreshAllSessions()
-    }
+    fun closeTimeline() = BridgeRepository.closeTimeline()
 
-    /** Re-requests the open chat's snapshot; used by the UI poller. */
-    fun refreshTimeline() {
-        val current = state.value
-        val session = current.selectedSession ?: return
-        if (current.connections[session.hostId] != ConnectionState.CONNECTED) return
-        client.requestSnapshot(session.hostId, session.ref)
-    }
+    fun refresh() = BridgeRepository.refresh()
 
-    fun updateComposer(value: String) {
-        mutableState.update { it.copy(composerText = value) }
-    }
+    fun refreshTimeline() = BridgeRepository.refreshTimeline()
 
-    fun sendMessage() {
-        val current = state.value
-        val text = current.composerText.trim()
-        if (text.isEmpty() || current.sending) return
-        val session = current.selectedSession
-        val hostId = session?.hostId ?: current.newChatHostId ?: return
-        val optimistic = TimelineItem(
-            id = "local-${System.currentTimeMillis()}",
-            kind = "message",
-            role = "user",
-            text = text,
-            status = "pending",
-            at = System.currentTimeMillis(),
-        )
-        mutableState.update {
-            it.copy(
-                composerText = "",
-                sending = true,
-                timeline = it.timeline + optimistic,
-                error = null,
-            )
-        }
-        if (session != null) {
-            client.sendTurn(hostId, session.ref, text, current.turnModel, current.turnEffort, current.turnMode)
-        } else {
-            val provider = current.newChatProvider ?: return
-            client.sendNewChat(hostId, provider, text, current.turnModel, current.turnEffort, current.turnMode)
-        }
-    }
+    fun updateComposer(value: String) = BridgeRepository.updateComposer(value)
 
-    override fun onConnectionChanged(hostId: String, state: ConnectionState) = onUi {
-        mutableState.update { it.copy(connections = it.connections + (hostId to state)) }
-    }
+    fun sendMessage() = BridgeRepository.sendMessage()
 
-    override fun onSessions(hostId: String, sessions: List<BridgeSession>) = onUi {
-        mutableState.update { current ->
-            // Replace only this machine's slice; other machines keep theirs.
-            current.copy(sessions = current.sessions.filterNot { it.hostId == hostId } + sessions, error = null)
-        }
-    }
+    fun respondToApproval(id: String, allow: Boolean, choice: String? = null) =
+        BridgeRepository.respondToApproval(id, allow, choice)
 
-    override fun onProviderStatus(hostId: String, statuses: List<ProviderStatus>) = onUi {
-        mutableState.update { current ->
-            current.copy(
-                providerStatus = current.providerStatus + (hostId to statuses.associateBy { it.provider }),
-            )
-        }
-    }
+    fun discover() = BridgeRepository.discover()
 
-    override fun onSnapshot(hostId: String, session: BridgeSession, items: List<TimelineItem>) = onUi {
-        mutableState.update { current ->
-            val open = current.selectedSession
-            if (open?.hostId != hostId || open.ref != session.ref) return@update current
-            // While our own turn is in flight, keep the optimistic timeline.
-            if (current.sending) return@update current
-            current.copy(selectedSession = session, timeline = items, error = null)
-        }
-    }
+    fun checkForUpdate(announceUpToDate: Boolean = false) =
+        BridgeRepository.checkForUpdate(BuildConfig.VERSION_NAME, announceUpToDate)
 
-    override fun onSessionCreated(hostId: String, session: BridgeSession) = onUi {
-        mutableState.update { current ->
-            if (current.newChatHostId == hostId && current.newChatProvider == session.provider) {
-                current.copy(
-                    selectedSession = session,
-                    newChatHostId = null,
-                    newChatProvider = null,
-                    sessions = current.sessions + session,
-                )
-            } else {
-                current
-            }
-        }
-    }
+    fun installUpdate() = BridgeRepository.installUpdate()
 
-    override fun onApproval(hostId: String, approval: ApprovalRequest) = onUi {
-        mutableState.update { current ->
-            if (current.selectedSession?.hostId != hostId && current.newChatHostId != hostId) return@update current
-            val existing = current.approvals.indexOfFirst { it.id == approval.id }
-            val approvals = if (existing >= 0) {
-                current.approvals.toMutableList().also { it[existing] = approval }
-            } else {
-                current.approvals + approval
-            }
-            current.copy(approvals = approvals)
-        }
-    }
-
-    fun respondToApproval(id: String, allow: Boolean, choice: String? = null) {
-        val current = state.value
-        val hostId = current.selectedSession?.hostId ?: current.newChatHostId ?: return
-        // Show the decision immediately; the machine confirms it right after.
-        mutableState.update {
-            it.copy(approvals = it.approvals.map { approval ->
-                if (approval.id == id) approval.copy(resolved = true, allowed = allow, answer = choice) else approval
-            })
-        }
-        client.sendApproval(hostId, id, allow, choice)
-    }
-
-    override fun onTurnItem(hostId: String, item: TimelineItem) = onUi {
-        mutableState.update { current ->
-            if (current.selectedSession?.hostId != hostId && current.newChatHostId != hostId) return@update current
-            val existing = current.timeline.indexOfFirst { it.id == item.id }
-            val timeline = if (existing >= 0) {
-                current.timeline.toMutableList().also { it[existing] = item }
-            } else {
-                current.timeline + item
-            }
-            current.copy(timeline = timeline)
-        }
-    }
-
-    override fun onTurnState(hostId: String, state: String) = onUi {
-        mutableState.update { current ->
-            val open = current.selectedSession ?: return@update current
-            if (open.hostId != hostId) return@update current
-            current.copy(selectedSession = open.copy(state = state))
-        }
-    }
-
-    override fun onTurnEnd(hostId: String) = onUi {
-        mutableState.update { it.copy(sending = false) }
-        val session = state.value.selectedSession
-        if (session != null && session.hostId == hostId) client.requestSnapshot(hostId, session.ref)
-        // Usage moved during the turn — refresh the numbers we show.
-        client.requestProviderStatus(hostId)
-    }
-
-    override fun onError(hostId: String, message: String) = onUi {
-        val name = state.value.pairings.firstOrNull { it.id == hostId }?.name
-        mutableState.update {
-            it.copy(error = if (name != null) "$name: $message" else message, sending = false)
-        }
-    }
-
-    override fun onCleared() {
-        client.closeAll()
-        super.onCleared()
-    }
-
-    private fun onUi(block: () -> Unit) {
-        viewModelScope.launch { block() }
-    }
+    fun dismissUpdate() = BridgeRepository.dismissUpdate()
 }

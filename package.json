@@ -2,7 +2,7 @@
   "name": "vscode-llm-mobile-bridge",
   "displayName": "LLM Mobile Bridge",
   "description": "A privacy-first mobile view of local Claude Code and Codex sessions.",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "private": true,
   "publisher": "furstfri",
   "repository": {
@@ -38,6 +38,14 @@
       {
         "command": "llmMobileBridge.copyPairing",
         "title": "LLM Mobile Bridge: Copy Pairing Payload"
+      },
+      {
+        "command": "llmMobileBridge.showPairingQr",
+        "title": "LLM Mobile Bridge: Show Pairing QR Code"
+      },
+      {
+        "command": "llmMobileBridge.pairingMenu",
+        "title": "LLM Mobile Bridge: Pair a Phone"
       },
       {
         "command": "llmMobileBridge.disconnectAll",
@@ -106,6 +114,18 @@
           "default": "ws://10.0.2.2:8765",
           "description": "URL copied to Android. The default reaches Windows localhost from an emulator. Local ws:// hosts (10.0.2.2, 127.0.0.1, localhost) get the active gateway port substituted; any other URL — e.g. a wss:// reverse-proxy domain — is copied exactly as configured."
         },
+        "llmMobileBridge.discovery": {
+          "type": "boolean",
+          "default": true,
+          "description": "Answer UDP broadcast probes from the phone on the local network so it can re-find this machine after an address change. The reply carries the machine name and gateway port, never the pairing token."
+        },
+        "llmMobileBridge.discoveryPort": {
+          "type": "number",
+          "default": 8766,
+          "minimum": 1024,
+          "maximum": 65535,
+          "description": "UDP port used to answer local-network discovery probes."
+        },
         "llmMobileBridge.hostName": {
           "type": "string",
           "default": "",
@@ -158,7 +178,7 @@
     "build": "tsc -p tsconfig.json",
     "bundle:extension": "esbuild src/extension.ts --bundle --platform=node --format=cjs --target=node20 --external:vscode \"--banner:js=const __import_meta_url = require('node:url').pathToFileURL(__filename).toString();\" --define:import.meta.url=__import_meta_url --outfile=dist/extension.bundle.cjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test dist/test/json-rpc-client.test.js dist/test/session-registry.test.js dist/test/gateway-core.test.js dist/test/claude-adapter.test.js dist/test/codex-adapter.test.js dist/test/local-gateway-server.test.js dist/test/gateway-daemon-config.test.js dist/test/gateway-daemon.test.js dist/test/relay-server.test.js dist/test/executables.test.js",
+    "test": "npm run build && node --test dist/test/json-rpc-client.test.js dist/test/session-registry.test.js dist/test/gateway-core.test.js dist/test/claude-adapter.test.js dist/test/codex-adapter.test.js dist/test/local-gateway-server.test.js dist/test/gateway-daemon-config.test.js dist/test/gateway-daemon.test.js dist/test/relay-server.test.js dist/test/executables.test.js dist/test/timestamps.test.js dist/test/qr.test.js dist/test/discovery.test.js",
     "probe": "npm run build && node dist/index.js probe",
     "codex:control-probe": "npm run build && node dist/codex-control-probe.js",
     "gateway:serve": "npm run build && node dist/gateway-daemon.js serve",

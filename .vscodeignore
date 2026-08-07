@@ -1,6 +1,8 @@
 .superpowers/**
 .github/**
 android/**
+_port_from_stale_clone/**
+MERGE_PLAN.md
 artifacts/**
 docker/**
 docs/**

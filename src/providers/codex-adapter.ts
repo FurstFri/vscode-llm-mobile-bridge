@@ -6,6 +6,7 @@ import type {
   TurnOptions,
 } from "../gateway/provider-adapter.js";
 import type { ProviderLimits, ProviderModel, TimelineItem } from "../gateway/protocol.js";
+import { parseTimestamp } from "../gateway/timestamps.js";
 import { resolveCodexExecutable } from "./executables.js";
 import { JsonRpcNotification, JsonRpcProcess } from "./json-rpc-client.js";
 
@@ -106,11 +107,12 @@ export class CodexReadOnlyAdapter implements ProviderAdapter {
       .filter((thread) => !this.cwd || typeof thread.cwd !== "string" || samePath(thread.cwd, this.cwd))
       .flatMap((thread) => {
         if (typeof thread.id !== "string") return [];
+        const updatedAt = threadTimestamp(thread);
         return [{
           providerSessionId: thread.id,
           title: firstString(thread, ["name", "preview"]) ?? "Codex conversation",
           project: typeof thread.cwd === "string" && thread.cwd ? projectName(thread.cwd) : undefined,
-          updatedAt: typeof thread.updatedAt === "number" ? thread.updatedAt : undefined,
+          ...(updatedAt !== undefined ? { updatedAt } : {}),
           capabilities: { canRead: true, canStartTurn: this.allowTurns, canApprove: false },
         }];
       });
@@ -127,7 +129,7 @@ export class CodexReadOnlyAdapter implements ProviderAdapter {
     const lastItem = asObject(lastItems.at(-1));
     const status = asObject(thread.status)?.type ?? thread.status;
     return {
-      revision: `${numberOrZero(thread.updatedAt)}:${stringOrEmpty(lastTurn?.id)}:${stringOrEmpty(lastItem?.id)}`,
+      revision: `${revisionToken(thread.updatedAt)}:${stringOrEmpty(lastTurn?.id)}:${stringOrEmpty(lastItem?.id)}`,
       state: status === "active" || status === "running" ? "busy" : "idle",
       items,
     };
@@ -325,14 +327,30 @@ export function normalizeCodexItems(values: readonly unknown[]): TimelineItem[] 
   return items.filter((item) => item.text?.trim().length);
 }
 
+/**
+ * The revision is a change token, not a date, so the raw value is enough —
+ * and it has to stay raw, or an ISO-8601 build would collapse to a constant.
+ */
+function revisionToken(value: unknown): string {
+  return typeof value === "number" || typeof value === "string" ? String(value) : "0";
+}
+
+/**
+ * Codex reports the thread time as ISO text in some builds and as epoch
+ * seconds in others, and names the field differently across them.
+ */
+function threadTimestamp(thread: Record<string, unknown>): number | undefined {
+  for (const key of ["updatedAt", "updated_at", "modifiedAt", "createdAt", "created_at"]) {
+    const parsed = parseTimestamp(thread[key]);
+    if (parsed !== undefined) return parsed;
+  }
+  return undefined;
+}
+
 function extractItemTimestamp(item: Record<string, unknown>): number | undefined {
   for (const key of ["completedAt", "updatedAt", "createdAt", "timestamp", "startedAt"]) {
-    const raw = item[key];
-    if (typeof raw === "number" && Number.isFinite(raw)) return raw;
-    if (typeof raw === "string") {
-      const parsed = Date.parse(raw);
-      if (!Number.isNaN(parsed)) return parsed;
-    }
+    const parsed = parseTimestamp(item[key]);
+    if (parsed !== undefined) return parsed;
   }
   return undefined;
 }
@@ -377,10 +395,6 @@ function asObject(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
     : undefined;
-}
-
-function numberOrZero(value: unknown): number {
-  return typeof value === "number" ? value : 0;
 }
 
 function stringOrEmpty(value: unknown): string {

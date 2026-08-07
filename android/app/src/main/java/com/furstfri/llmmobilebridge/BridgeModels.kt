@@ -71,6 +71,21 @@ data class ApprovalRequest(
     val options: List<String> = emptyList(),
     val multiSelect: Boolean = false,
     val answer: String? = null,
+    /** Which chat is blocked on this prompt; empty for gateway-level events. */
+    val sessionRef: String = "",
+)
+
+/**
+ * An unanswered prompt, tracked for every machine rather than only for the
+ * open chat, so the background service can raise a notification for it.
+ */
+data class PendingPrompt(
+    val hostId: String,
+    val hostName: String,
+    val sessionRef: String,
+    val approvalId: String,
+    val kind: String,
+    val title: String,
 )
 
 data class TimelineItem(
@@ -107,6 +122,14 @@ data class BridgeUiState(
     val timeline: List<TimelineItem> = emptyList(),
     /** Permission prompts for the open chat, newest last. */
     val approvals: List<ApprovalRequest> = emptyList(),
+    /** Every unanswered prompt across machines, for background notifications. */
+    val pending: List<PendingPrompt> = emptyList(),
+    /** Machines answering discovery probes on this network. */
+    val discovered: List<DiscoveredHost> = emptyList(),
+    val discovering: Boolean = false,
+    /** A newer APK on GitHub Releases, once a check found one. */
+    val update: AppRelease? = null,
+    val updateStatus: String? = null,
     val composerText: String = "",
     val turnModel: String = "",
     val turnEffort: String = "",

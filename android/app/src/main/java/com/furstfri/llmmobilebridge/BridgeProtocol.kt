@@ -11,8 +11,17 @@ object BridgeProtocol {
         val token = json.getString("token")
         require(url.startsWith("ws://") || url.startsWith("wss://")) { "Pairing URL must use WebSocket" }
         require(token.length >= 32) { "Pairing token is invalid" }
-        val name = json.optString("name").takeIf { it.isNotBlank() } ?: "Компьютер"
-        return PairingPayload(url = url, token = token, name = name)
+        val name = json.optString("label").takeIf { it.isNotBlank() }
+            ?: json.optString("name").takeIf { it.isNotBlank() }
+            ?: "Компьютер"
+        // Since 0.13.0 the machine sends a stable connection id, so re-pairing
+        // updates that entry instead of adding a second one for the same host.
+        val connectionId = json.optString("connectionId").takeIf { it.isNotBlank() }
+        return if (connectionId != null) {
+            PairingPayload(url = url, token = token, name = name, id = connectionId)
+        } else {
+            PairingPayload(url = url, token = token, name = name)
+        }
     }
 
     fun request(id: String, type: String, fields: Map<String, String> = emptyMap()): String {
@@ -104,6 +113,9 @@ object BridgeProtocol {
             options = buildList { for (i in 0 until options.length()) add(options.getString(i)) },
             multiSelect = payload.optBoolean("multiSelect"),
             answer = payload.optNullableString("answer"),
+            // The envelope names the blocked chat; a notification needs it to
+            // deep-link to the right conversation.
+            sessionRef = event.optString("sessionRef"),
         )
     }
 

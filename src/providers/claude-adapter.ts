@@ -27,6 +27,7 @@ import type {
   TurnOptions,
 } from "../gateway/provider-adapter.js";
 import type { ProviderLimits, ProviderModel, TimelineItem } from "../gateway/protocol.js";
+import { parseTimestamp } from "../gateway/timestamps.js";
 
 /** Shape of the SDK's ModelInfo we rely on; extra fields are ignored. */
 export interface ClaudeModelInfo {
@@ -148,17 +149,22 @@ export class ClaudeReadOnlyAdapter implements ProviderAdapter {
       ...(this.dir ? { dir: this.dir } : {}),
       limit: this.limit,
     });
-    return sessions.map((session) => ({
-      providerSessionId: session.sessionId,
-      title: session.customTitle ?? session.summary,
-      project: session.cwd ? projectName(session.cwd) : undefined,
-      updatedAt: session.lastModified,
-      capabilities: {
-        canRead: true,
-        canStartTurn: this.allowTurns,
-        canApprove: false,
-      },
-    }));
+    return sessions.map((session) => {
+      // Omitted rather than zeroed: a client renders nothing for a missing
+      // date, but would render 1970 for a zero.
+      const updatedAt = parseTimestamp(session.lastModified);
+      return {
+        providerSessionId: session.sessionId,
+        title: session.customTitle ?? session.summary,
+        project: session.cwd ? projectName(session.cwd) : undefined,
+        ...(updatedAt !== undefined ? { updatedAt } : {}),
+        capabilities: {
+          canRead: true,
+          canStartTurn: this.allowTurns,
+          canApprove: false,
+        },
+      };
+    });
   }
 
   async readSnapshot(providerSessionId: string): Promise<ProviderSessionSnapshot> {
@@ -518,13 +524,7 @@ export function normalizeClaudeMessages(messages: readonly SessionMessage[]): Ti
 
 function extractTimestamp(sessionMessage: SessionMessage): number | undefined {
   const record = sessionMessage as unknown as Record<string, unknown>;
-  const raw = record.timestamp;
-  if (typeof raw === "number" && Number.isFinite(raw)) return raw;
-  if (typeof raw === "string") {
-    const parsed = Date.parse(raw);
-    if (!Number.isNaN(parsed)) return parsed;
-  }
-  return undefined;
+  return parseTimestamp(record.timestamp);
 }
 
 function extractText(value: unknown): string {

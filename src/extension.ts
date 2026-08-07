@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { homedir, hostname } from "node:os";
 import * as vscode from "vscode";
 import { GatewayCore } from "./gateway/gateway-core.js";
@@ -6,10 +6,24 @@ import { SessionRegistry } from "./gateway/session-registry.js";
 import type { SessionDescriptor, TimelineItem } from "./gateway/protocol.js";
 import { ClaudeReadOnlyAdapter, type ClaudePermissionMode } from "./providers/claude-adapter.js";
 import { CodexReadOnlyAdapter } from "./providers/codex-adapter.js";
+import { encodeQr, qrToSvg } from "./qr.js";
+import { DEFAULT_DISCOVERY_PORT, DiscoveryResponder } from "./transport/discovery.js";
 import { LocalGatewayServer } from "./transport/local-gateway-server.js";
 import { RelayHostClient } from "./transport/relay-host-client.js";
 
-const SECRET_KEY = "llmMobileBridge.pairingToken";
+/**
+ * The token used to be a single flat secret. It is now keyed by a connection
+ * id so rotating one pairing cannot invalidate another, and so the phone can
+ * address this machine by a stable identifier instead of by URL.
+ */
+const LEGACY_SECRET_KEY = "llmMobileBridge.pairingToken";
+const TOKEN_SECRET_PREFIX = "llmMobileBridge.pairingToken";
+/**
+ * Machine-scoped, not window-scoped: the gateway serves this machine's whole
+ * session store, and exactly one window hosts it while the others stand by,
+ * so every window has to hand out the same identity.
+ */
+const CONNECTION_ID_KEY = "llmMobileBridge.connectionId";
 /** Keeps session references stable across gateway restarts. */
 const REF_SALT_KEY = "llmMobileBridge.sessionRefSalt";
 
@@ -17,6 +31,7 @@ class BridgeController implements vscode.Disposable {
   private server?: LocalGatewayServer;
   private relayClient?: RelayHostClient;
   private gateway?: GatewayCore;
+  private discovery?: DiscoveryResponder;
   private activePort?: number;
   private takeoverTimer?: NodeJS.Timeout;
   private healthTimer?: NodeJS.Timeout;
@@ -38,7 +53,7 @@ class BridgeController implements vscode.Disposable {
   constructor(private readonly context: vscode.ExtensionContext) {
     this.output = vscode.window.createOutputChannel("LLM Mobile Bridge", { log: true });
     this.status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
-    this.status.command = "llmMobileBridge.copyPairing";
+    this.status.command = "llmMobileBridge.pairingMenu";
     this.setStopped();
     this.status.show();
   }
@@ -80,7 +95,8 @@ class BridgeController implements vscode.Disposable {
         }
       }
       this.status.text = this.relayClient ? "$(radio-tower) LLM Bridge: local+relay" : "$(radio-tower) LLM Bridge: local";
-      this.status.tooltip = "Loopback gateway is running. Click to copy pairing payload.";
+      this.status.tooltip = "Loopback gateway is running. Click to pair a phone.";
+      await this.startDiscovery(config, this.activePort);
       this.output.info(`Gateway started on loopback port ${this.activePort}.`);
     } catch (error) {
       this.activePort = undefined;
@@ -137,6 +153,8 @@ class BridgeController implements vscode.Disposable {
   async stop(explicit = false): Promise<void> {
     if (explicit) this.stoppedByUser = true;
     this.clearTakeover();
+    this.discovery?.stop();
+    this.discovery = undefined;
     const server = this.server;
     this.server = undefined;
     this.activePort = undefined;
@@ -149,25 +167,113 @@ class BridgeController implements vscode.Disposable {
   }
 
   async copyPairing(): Promise<void> {
+    const pairing = await this.pairing();
+    if (!pairing) return;
+    await vscode.env.clipboard.writeText(pairing.payload);
+    await vscode.window.showInformationMessage("LLM Mobile Bridge pairing payload copied to the clipboard.");
+  }
+
+  /**
+   * The status bar entry point. Scanning is the primary way to pair, so the QR
+   * code is the first item rather than something buried in the palette.
+   */
+  async pairingMenu(): Promise<void> {
+    const choice = await vscode.window.showQuickPick(
+      [
+        {
+          label: "$(device-camera) Показать QR для пейринга",
+          detail: "Отсканируйте в приложении: «+ Компьютер» → «Сканировать QR»",
+          run: () => this.showPairingQr(),
+        },
+        {
+          label: "$(clippy) Скопировать пейринг",
+          detail: "Вставить JSON в приложение вручную",
+          run: () => this.copyPairing(),
+        },
+        {
+          label: "$(debug-disconnect) Отключить все устройства",
+          detail: "Сменить токен пейринга этой машины",
+          run: () => this.disconnectAll(),
+        },
+      ],
+      { title: "LLM Mobile Bridge", placeHolder: "Подключить телефон к этой машине" },
+    );
+    await choice?.run();
+  }
+
+  /**
+   * Renders the pairing payload as a QR code so the phone can scan it instead
+   * of the operator copying JSON between machines. The symbol is drawn locally
+   * and the panel runs no scripts, so the token never leaves the workstation.
+   */
+  async showPairingQr(): Promise<void> {
+    const pairing = await this.pairing();
+    if (!pairing) return;
+    const panel = vscode.window.createWebviewPanel(
+      "llmMobileBridge.pairing",
+      "LLM Mobile Bridge — пейринг",
+      vscode.ViewColumn.Active,
+      { enableScripts: false, retainContextWhenHidden: false },
+    );
+    const svg = qrToSvg(encodeQr(pairing.payload, "M"), {
+      moduleSize: 6,
+      quietZone: 4,
+      dark: "#0b1220",
+      light: "#ffffff",
+    });
+    panel.webview.html = pairingPage(svg, pairing.label, pairing.url);
+  }
+
+  async disconnectAll(): Promise<void> {
+    await this.stop();
+    await this.context.secrets.store(await this.tokenKey(), createToken());
+    await this.start();
+    await vscode.window.showInformationMessage("All mobile sessions were disconnected and the pairing token was rotated.");
+  }
+
+  /** Starts the gateway if needed and builds the payload every entry point shares. */
+  private async pairing(): Promise<{ payload: string; label: string; url: string } | undefined> {
     if (!this.server || !this.activePort) await this.start();
-    if (!this.server || !this.activePort) return;
+    if (!this.server || !this.activePort) return undefined;
     const token = await this.getOrCreateToken();
+    const connectionId = await this.getOrCreateConnectionId();
     const config = vscode.workspace.getConfiguration("llmMobileBridge");
     const relayUrl = config.get<string>("relayUrl", "").trim();
     const configuredUrl = config.get<string>("mobileUrl", `ws://10.0.2.2:${this.activePort}`);
     // With a relay configured, the phone connects to the relay domain as-is.
     const url = relayUrl || buildMobileUrl(configuredUrl, this.activePort);
-    // The name lets the phone tell several paired machines apart.
-    const name = config.get<string>("hostName", "").trim() || hostname();
-    await vscode.env.clipboard.writeText(JSON.stringify({ protocolVersion: 1, url, token, name }));
-    await vscode.window.showInformationMessage("LLM Mobile Bridge pairing payload copied to the clipboard.");
+    // The name lets the phone tell several paired machines apart; the
+    // connection id lets it update that entry instead of adding a duplicate.
+    const label = this.machineName;
+    return {
+      payload: JSON.stringify({ protocolVersion: 1, connectionId, label, url, token, name: label }),
+      label,
+      url,
+    };
   }
 
-  async disconnectAll(): Promise<void> {
-    await this.stop();
-    await this.context.secrets.store(SECRET_KEY, createToken());
-    await this.start();
-    await vscode.window.showInformationMessage("All mobile sessions were disconnected and the pairing token was rotated.");
+  /**
+   * Lets an already paired phone re-find this machine after an address change.
+   * The announcement carries no credential, so answering a probe cannot pair a
+   * device that was never given the token.
+   */
+  private async startDiscovery(config: vscode.WorkspaceConfiguration, gatewayPort: number): Promise<void> {
+    if (!config.get<boolean>("discovery", true)) return;
+    const responder = new DiscoveryResponder({
+      connectionId: await this.getOrCreateConnectionId(),
+      label: this.machineName,
+      gatewayPort,
+      discoveryPort: config.get<number>("discoveryPort", DEFAULT_DISCOVERY_PORT),
+    });
+    try {
+      const port = await responder.start();
+      this.discovery = responder;
+      this.output.info(`Answering discovery probes on UDP ${port}.`);
+    } catch (error) {
+      responder.stop();
+      const message = error instanceof Error ? error.message : String(error);
+      this.output.warn(`Network discovery is unavailable: ${message}`);
+    }
   }
 
   async listSessions(): Promise<SessionDescriptor[]> {
@@ -231,8 +337,31 @@ class BridgeController implements vscode.Disposable {
     return this.gateway;
   }
 
+  /** Stable for the lifetime of the install, so re-pairing updates one entry. */
+  private async getOrCreateConnectionId(): Promise<string> {
+    const stored = this.context.globalState.get<string>(CONNECTION_ID_KEY);
+    if (stored) return stored;
+    const connectionId = randomUUID();
+    await this.context.globalState.update(CONNECTION_ID_KEY, connectionId);
+    return connectionId;
+  }
+
+  private async tokenKey(): Promise<string> {
+    return `${TOKEN_SECRET_PREFIX}:${await this.getOrCreateConnectionId()}`;
+  }
+
   private async getOrCreateToken(): Promise<string> {
-    return this.getOrCreateSecret(SECRET_KEY);
+    const key = await this.tokenKey();
+    const stored = await this.context.secrets.get(key);
+    if (stored) return stored;
+    // Carry the pre-0.13 flat secret across, or every already paired phone
+    // would be locked out by the upgrade alone.
+    const legacy = await this.context.secrets.get(LEGACY_SECRET_KEY);
+    if (legacy) {
+      await this.context.secrets.store(key, legacy);
+      return legacy;
+    }
+    return this.getOrCreateSecret(key);
   }
 
   private async getOrCreateSecret(key: string): Promise<string> {
@@ -369,6 +498,7 @@ class BridgeTreeProvider implements vscode.TreeDataProvider<BridgeTreeNode> {
     if (!node) {
       const actions: BridgeTreeNode[] = this.controller.running
         ? [
+            { kind: "action", label: "Показать QR для телефона", icon: "device-camera", command: "llmMobileBridge.showPairingQr" },
             { kind: "action", label: "Скопировать пейринг для телефона", icon: "device-mobile", command: "llmMobileBridge.copyPairing" },
             { kind: "action", label: "Остановить шлюз", icon: "debug-stop", command: "llmMobileBridge.stop" },
             { kind: "action", label: "Отключить все устройства", icon: "circle-slash", command: "llmMobileBridge.disconnectAll" },
@@ -402,6 +532,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("llmMobileBridge.start", () => controller.start()),
     vscode.commands.registerCommand("llmMobileBridge.stop", () => controller.stop(true)),
     vscode.commands.registerCommand("llmMobileBridge.copyPairing", () => controller.copyPairing()),
+    vscode.commands.registerCommand("llmMobileBridge.showPairingQr", () => controller.showPairingQr()),
+    vscode.commands.registerCommand("llmMobileBridge.pairingMenu", () => controller.pairingMenu()),
     vscode.commands.registerCommand("llmMobileBridge.disconnectAll", () => controller.disconnectAll()),
     vscode.commands.registerCommand("llmMobileBridge.refreshSessions", () => tree.refresh()),
     vscode.commands.registerCommand("llmMobileBridge.openSession", (ref: string, title: string) =>
@@ -459,6 +591,30 @@ function renderTranscript(session: SessionDescriptor, items: TimelineItem[]): st
 <div class="meta">${escapeHtml([session.provider, session.project, session.state].filter(Boolean).join(" · "))}</div>
 ${rows || "<p>Пустой транскрипт.</p>"}
 </body></html>`;
+}
+
+/** Static markup only: no scripts, no remote resources, no token in the text. */
+function pairingPage(svg: string, label: string, url: string): string {
+  return `<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';">
+<style>
+  body { font-family: var(--vscode-font-family); color: var(--vscode-foreground); text-align: center; padding: 24px; }
+  figure { display: inline-block; margin: 0; padding: 16px; background: #ffffff; border-radius: 12px; }
+  h1 { font-size: 1.1rem; margin: 0 0 4px; }
+  p { margin: 4px 0; color: var(--vscode-descriptionForeground); }
+</style>
+</head>
+<body>
+<h1>${escapeHtml(label)}</h1>
+<p>${escapeHtml(url)}</p>
+<figure>${svg}</figure>
+<p>Отсканируйте в приложении: «+ Компьютер» → «Сканировать QR».</p>
+<p>Код содержит токен пейринга этой машины — обращайтесь с ним как с паролем.</p>
+</body>
+</html>`;
 }
 
 function escapeHtml(value: string): string {

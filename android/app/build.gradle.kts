@@ -14,8 +14,8 @@ android {
         applicationId = "com.furstfri.llmmobilebridge"
         minSdk = 26
         targetSdk = 36
-        versionCode = 17
-        versionName = "0.12.0"
+        versionCode = 18
+        versionName = "0.13.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -34,6 +34,8 @@ android {
 
     buildFeatures {
         compose = true
+        // AppUpdater compares BuildConfig.VERSION_NAME with the GitHub release.
+        buildConfig = true
     }
 }
 
@@ -58,6 +60,8 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // Self-contained QR scanner: no Play Services, works offline.
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20250517")

@@ -27,6 +27,42 @@ class BridgeProtocolTest {
     }
 
     @Test
+    fun keepsTheConnectionIdSoRepairingUpdatesOneEntry() {
+        val payload = """
+            {"protocolVersion":1,"connectionId":"9f1c0f2e-2b7a-4a4c-8c1e-2f9a7d6b5c31",
+             "label":"Домашний ПК","url":"ws://192.168.1.42:8765",
+             "token":"12345678901234567890123456789012"}
+        """.trimIndent()
+
+        val first = BridgeProtocol.parsePairing(payload)
+        val second = BridgeProtocol.parsePairing(payload)
+
+        assertEquals("9f1c0f2e-2b7a-4a4c-8c1e-2f9a7d6b5c31", first.id)
+        assertEquals(first.id, second.id)
+        assertEquals("Домашний ПК", first.name)
+    }
+
+    @Test
+    fun carriesTheBlockedChatOnAPrompt() {
+        val response = JSONObject("""
+            {
+              "protocolVersion": 1, "id": "evt", "ok": true, "type": "event",
+              "event": {
+                "type": "approval.request",
+                "sessionRef": "opaque-ref",
+                "payload": {"id": "ask-1", "toolName": "Bash", "summary": "rm -rf build", "kind": "permission"}
+              }
+            }
+        """.trimIndent())
+
+        val approval = BridgeProtocol.parseApproval(response)
+
+        assertEquals("ask-1", approval?.id)
+        assertEquals("opaque-ref", approval?.sessionRef)
+        assertFalse(approval?.resolved ?: true)
+    }
+
+    @Test
     fun createsVersionedAuthRequestEnvelope() {
         val request = JSONObject(BridgeProtocol.request(
             id = "auth-request",
